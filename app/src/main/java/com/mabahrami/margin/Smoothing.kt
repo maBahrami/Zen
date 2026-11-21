@@ -13,7 +13,7 @@ const val SMOOTH_MEDIUM = 2
 const val SMOOTH_STRONG = 3
 
 /** Pen smoothing (dp on screen): the biggest wiggle treated as tremor. Fixed, very gentle (chosen on the tablet). */
-const val PEN_SMOOTH_DP = 0.1f
+const val PEN_SMOOTH_DP = 0.08f
 
 /**
  * Cleans up a finished stroke without changing its shape:
@@ -141,7 +141,7 @@ object Smoothing {
         return out.toFloatArray()
     }
 
-    /** One pass of a [1, 2, 1] / 4 average over neighbours (was two, gentler now); the ends stay where they are. */
+    /** One light pass of a [1, 4, 1] / 6 average over neighbours (was [1, 2, 1] / 4); the ends stay where they are. */
     private fun preSmooth(p: FloatArray): FloatArray {
         var a = p
         val n = a.size / 2
@@ -149,8 +149,8 @@ object Smoothing {
         repeat(1) {
             val b = a.copyOf()
             for (k in 1 until n - 1) {
-                b[2 * k] = (a[2 * k - 2] + 2 * a[2 * k] + a[2 * k + 2]) / 4f
-                b[2 * k + 1] = (a[2 * k - 1] + 2 * a[2 * k + 1] + a[2 * k + 3]) / 4f
+                b[2 * k] = (a[2 * k - 2] + 4 * a[2 * k] + a[2 * k + 2]) / 6f
+                b[2 * k + 1] = (a[2 * k - 1] + 4 * a[2 * k + 1] + a[2 * k + 3]) / 6f
             }
             a = b
         }

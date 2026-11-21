@@ -21,8 +21,8 @@ import kotlin.math.sin
  */
 object Pressure {
 
-    const val MIN_FACTOR = 0.85f
-    const val MAX_FACTOR = 1.15f
+    const val MIN_FACTOR = 0.70f
+    const val MAX_FACTOR = 1.35f
 
     /** Width factor for an S Pen pressure (0..1). About 1.0 at a normal writing pressure. */
     fun factor(p: Float): Float {
