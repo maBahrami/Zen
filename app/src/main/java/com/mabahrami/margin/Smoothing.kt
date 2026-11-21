@@ -36,7 +36,11 @@ object Smoothing {
 
     fun smooth(raw: FloatArray, rawSize: Int, tol: Float): FloatArray {
         if (rawSize / 2 < 3 || !(tol > 0f)) return raw.copyOf(rawSize)
-        val pts = preSmooth(resample(raw, rawSize, tol * 0.5f))
+        // even spacing: half the tolerance, but wider on long strokes so the point limit is never reached
+        val rawLen = length(raw, rawSize)
+        val h = max(tol * 0.5f, rawLen / (MAX_POINTS * 0.8f))
+        val even = resample(raw, rawSize, h) ?: return raw.copyOf(rawSize) // too many points: keep the stroke as drawn
+        val pts = preSmooth(even)
         val n = pts.size / 2
         if (n < 3) return raw.copyOf(rawSize)
         // 1. which points carry the shape
@@ -110,8 +114,23 @@ object Smoothing {
         return out.toFloatArray()
     }
 
-    /** Points every [h] along the stroke (the first and last point kept exactly). */
-    private fun resample(pts: FloatArray, size: Int, h: Float): FloatArray {
+    /** Most points a resampled stroke may have. */
+    private const val MAX_POINTS = 20000
+
+    private fun length(p: FloatArray, size: Int): Float {
+        var l = 0f
+        var k = 2
+        while (k + 1 < size) {
+            l += hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]); k += 2
+        }
+        return l
+    }
+
+    /**
+     * Points every [h] along the stroke (the first and last point kept exactly), or null if that would take
+     * more than [MAX_POINTS] (the stroke is then never cut short: the caller keeps it as drawn).
+     */
+    private fun resample(pts: FloatArray, size: Int, h: Float): FloatArray? {
         val n = size / 2
         val out = ArrayList<Float>(n * 2)
         out.add(pts[0]); out.add(pts[1])
@@ -127,7 +146,7 @@ object Smoothing {
                 ax += (bx - ax) * t
                 ay += (by - ay) * t
                 out.add(ax); out.add(ay)
-                if (out.size > 40000) return out.toFloatArray()
+                if (out.size > MAX_POINTS * 2) return null
                 len -= need
                 need = h
             }

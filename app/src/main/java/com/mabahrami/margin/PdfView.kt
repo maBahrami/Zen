@@ -2275,6 +2275,22 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return true
     }
 
+    /** True if [sm] (the smoothed stroke) starts and ends where [raw] does and isn't noticeably shorter. */
+    private fun smoothedIntact(raw: FloatArray, rawSize: Int, sm: FloatArray, tol: Float): Boolean {
+        if (sm.size < 4 || rawSize < 4) return false
+        val e = max(tol * 2f, 0.05f)
+        if (hypot(sm[0] - raw[0], sm[1] - raw[1]) > e) return false
+        if (hypot(sm[sm.size - 2] - raw[rawSize - 2], sm[sm.size - 1] - raw[rawSize - 1]) > e) return false
+        var rl = 0f
+        var k = 2
+        while (k + 1 < rawSize) { rl += hypot(raw[k] - raw[k - 2], raw[k + 1] - raw[k - 1]); k += 2 }
+        var sl = 0f
+        k = 2
+        while (k + 1 < sm.size) { sl += hypot(sm[k] - sm[k - 2], sm[k + 1] - sm[k - 1]); k += 2 }
+        // smoothing only takes out jitter, which shortens a stroke a little; never by much
+        return sl >= rl * 0.85f - e
+    }
+
     /** The live stroke with its pressure widths, or null when it's drawn evenly (highlighter, dashes, shapes, finger). */
     private fun livePressureInk(): Stroke? {
         if (!liveHasPressure || liveHighlighter || liveStyle != LINE_SOLID || livePoly || snapped != 0 || liveSize < 4) return null
@@ -2367,7 +2383,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 val pts = if (smoothTolDp > 0f && !livePoly && snapped == 0 && liveSize >= 6) {
                     val tol = smoothTolDp * resources.displayMetrics.density / d.scale
                     try {
-                        Smoothing.smooth(livePts, liveSize, tol)
+                        val sm = Smoothing.smooth(livePts, liveSize, tol)
+                        // safety: the smoothed stroke must end where the pen lifted and be about as long as
+                        // what was drawn; otherwise keep the stroke exactly as drawn
+                        if (smoothedIntact(livePts, liveSize, sm, tol)) sm else livePts.copyOf(liveSize)
                     } catch (t: Throwable) {
                         livePts.copyOf(liveSize) // never lose a stroke to smoothing
                     }
