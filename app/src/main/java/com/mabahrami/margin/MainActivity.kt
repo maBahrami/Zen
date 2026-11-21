@@ -136,6 +136,7 @@ class MainActivity : ComponentActivity() {
     private var insertAfterIndex = -1
     private lateinit var widthLabel: TextView
     private lateinit var widthSeek: SeekBar
+    private lateinit var widthTrack: WidthTrack
     private lateinit var titleBar: View
     private lateinit var titleDivider: View
     private val focusOnlyViews = ArrayList<View>()
@@ -620,15 +621,28 @@ class MainActivity : ComponentActivity() {
         palette.addView(iconButton(R.drawable.ic_minus, "Thinner") { stepWidth(-1) }, LinearLayout.LayoutParams(dp(28), dp(34)))
         val seek = SeekBar(this).apply {
             max = 39 // width = (progress + 1) * 0.25 pt  ->  0.25 .. 10 pt
-            setPadding(dp(8), dp(10), dp(8), dp(10))
+            setPadding(dp(11), dp(10), dp(11), dp(10))
             // keep the sideways-scrolling toolbar from stealing the drag
             setOnTouchListener { v, e ->
                 if (e.actionMasked == MotionEvent.ACTION_DOWN) v.parent?.requestDisallowInterceptTouchEvent(true)
                 false
             }
-            progressTintList = ColorStateList.valueOf(ACCENT)
-            thumbTintList = ColorStateList.valueOf(Color.WHITE)
-            progressBackgroundTintList = ColorStateList.valueOf(0xFF48484A.toInt())
+            // a wedge track (thin to thick) filled in the current colour, and a plain white disc as the thumb
+            widthTrack = WidthTrack(resources.displayMetrics.density)
+            progressDrawable = widthTrack
+            minHeight = widthTrack.intrinsicHeight
+            maxHeight = widthTrack.intrinsicHeight
+            thumb = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.WHITE)
+                setStroke(1, 0x40000000)
+                setSize(dp(20), dp(20))
+            }
+            thumbOffset = dp(10)
+            splitTrack = false
+            // the theme's tints would recolour both drawings, so clear them
+            progressTintList = null
+            thumbTintList = null
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
                     if (fromUser) setWidth((p + 1) * widthUnit())
@@ -862,6 +876,8 @@ class MainActivity : ComponentActivity() {
                 .translationZ(if (selected) dp(4).toFloat() else 0f)
                 .setDuration(140).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
         }
+        // the slider's filled part takes the current tool's colour (black shows as white on the dark toolbar)
+        widthTrack.color = Dark.ink(pdfView.penColor) or 0xFF000000.toInt()
         val w = pdfView.penWidth
         widthLabel.text = if (w % 1f == 0f) "${w.toInt()}" else String.format("%.2f", w).trimEnd('0').trimEnd('.')
     }
