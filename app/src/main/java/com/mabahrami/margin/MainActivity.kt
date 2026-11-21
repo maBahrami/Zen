@@ -1239,19 +1239,25 @@ class MainActivity : ComponentActivity() {
         private val window: android.widget.PopupWindow
         private val source = RectF()
         private var closing = false
+        /** Set once the closing animation is done: the window really goes away now. */
+        private var reallyClose = false
 
         init {
             content.visibility = View.INVISIBLE // shown by the opening animation
             genie.addView(content, FrameLayout.LayoutParams(widthPx, ViewGroup.LayoutParams.WRAP_CONTENT))
-            window = android.widget.PopupWindow(genie, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
+            // Every way the popup closes (a tap outside, Back, choosing a row) goes through dismiss();
+            // instead of vanishing, it first flows back into where it came from.
+            window = object : android.widget.PopupWindow(genie, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true) {
+                override fun dismiss() {
+                    if (reallyClose || !genie.isAttachedToWindow || isFinishing || isDestroyed) {
+                        super.dismiss()
+                    } else {
+                        this@GeniePop.dismiss()
+                    }
+                }
+            }
             window.animationStyle = 0 // the genie effect replaces the system animation
             window.isOutsideTouchable = true
-            // a tap outside flows the popup back into its anchor instead of just vanishing
-            window.setTouchInterceptor { _, e ->
-                if (e.action == MotionEvent.ACTION_OUTSIDE) {
-                    dismiss(); true
-                } else false
-            }
         }
 
         val isShowing: Boolean get() = window.isShowing
@@ -1290,9 +1296,11 @@ class MainActivity : ComponentActivity() {
             if (closing) return
             closing = true
             if (!window.isShowing) {
+                reallyClose = true
                 then?.invoke(); return
             }
             genie.close(source, content) {
+                reallyClose = true
                 try {
                     if (window.isShowing) window.dismiss()
                 } catch (ignored: Exception) {

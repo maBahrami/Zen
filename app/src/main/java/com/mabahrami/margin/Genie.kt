@@ -45,6 +45,13 @@ class GenieLayout(context: Context) : FrameLayout(context) {
     private fun run(source: RectF, child: View, from: Float, to: Float, ms: Long, onEnd: (() -> Unit)?) {
         anim?.let { it.removeAllListeners(); it.cancel() }
         anim = null
+        if (!isAttachedToWindow) {
+            // nothing on screen to animate: finish right away (so the popup still closes)
+            child.visibility = View.VISIBLE
+            finish()
+            onEnd?.invoke()
+            return
+        }
         val b = if (child.width > 0 && child.height > 0) try {
             Bitmap.createBitmap(child.width, child.height, Bitmap.Config.ARGB_8888).also { child.draw(Canvas(it)) }
         } catch (t: Throwable) {
