@@ -15,6 +15,7 @@ A minimal PDF annotator for the Samsung Galaxy Tab S9+ (S Pen), built for studyi
 - **Highlighter** – freehand or straight (magnetic at 0°/90°), with its own colour and width memory. Multiply blending keeps text readable, and overlapping highlights don't get darker, on screen and in exported PDFs.
 - **Eraser and lasso** – stroke eraser (the S Pen side button erases too); lasso selection to move, copy, cut, recolour or delete.
 - **Undo / redo** – up to 100 steps.
+- **Clipboard** – hold a page for *Paste* or *Clipboard*, which previews what's on the tablet's clipboard and can paste it right there.
 - **Images** – from gallery, camera (with crop), clipboard (e.g. Mac2Tab screenshots) or copied from the PDF itself; move across pages, resize, crop, lock.
 - **Save / Export / Share** – Save keeps everything editable in Zen (original, strokes and images are embedded in the PDF); Export and Share give a plain vector PDF that opens anywhere.
 - **New notes** – choose a light or dark page, blank, lined or grid paper, A4 or A5, portrait or landscape, with a live preview.

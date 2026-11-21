@@ -1181,8 +1181,9 @@ class MainActivity : ComponentActivity() {
                     setPadding(dp(2), dp(2), dp(2), dp(2))
                     background = GradientDrawable().apply {
                         cornerRadius = dp(12).toFloat()
-                        setColor(if (onScreen) 0x1A0A84FF else 0x0DFFFFFF)
-                        setStroke(dp(1), if (onScreen) 0x990A84FF.toInt() else 0x40FFFFFF)
+                        // grey inside, a blue border holding the two together (stronger while shown side by side)
+                        setColor(0x14FFFFFF)
+                        setStroke(dp(1), if (onScreen) 0x800A84FF.toInt() else 0x400A84FF)
                     }
                     contentDescription = "Side by side: ${baseName(unit[0].name)} and ${baseName(unit[1].name)}"
                 }
@@ -1214,13 +1215,15 @@ class MainActivity : ComponentActivity() {
     private fun makeTab(d: Doc, dragView: View?): View {
         shownUnsaved[d.id] = d.unsaved
         val isActive = d === active
+        // the active file is a soft blue pill, alone or inside a pair's capsule
+        val blue = isActive
         val tab = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), 0, dp(4), 0)
             background = RippleDrawable(
                 ColorStateList.valueOf(0x22FFFFFF),
-                if (isActive) rounded(SURFACE2, 10) else null,
+                if (blue) rounded(0x590A84FF, 10) else if (isActive) rounded(SURFACE2, 10) else null,
                 rounded(Color.WHITE, 10),
             )
             isClickable = true
@@ -1231,7 +1234,7 @@ class MainActivity : ComponentActivity() {
             setOnTouchListener { v, e -> handleTabDrag(dragView ?: v, d, e) }
         }
         if (d.unsaved) {
-            tab.addView(View(this).apply { background = oval(if (isActive) ACCENT else TEXT_DIM) },
+            tab.addView(View(this).apply { background = oval(if (blue) Color.WHITE else if (isActive) ACCENT else TEXT_DIM) },
                 LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(7) })
         }
         tab.addView(TextView(this).apply {
@@ -1248,7 +1251,7 @@ class MainActivity : ComponentActivity() {
             // only the active tab can be closed, so a stray tap on another tab just switches to it
             tab.addView(ImageView(this).apply {
                 setImageResource(R.drawable.ic_close)
-                imageTintList = ColorStateList.valueOf(TEXT_DIM)
+                imageTintList = ColorStateList.valueOf(if (blue) 0xD9FFFFFF.toInt() else TEXT_DIM)
                 contentDescription = "Close tab"
                 setPadding(dp(7), dp(7), dp(7), dp(7))
                 background = ripple()
@@ -3739,11 +3742,11 @@ class MainActivity : ComponentActivity() {
             if (active !== d) return@launch
             // the menu flows out of the point that was held
             val items = ArrayList<GItem>()
-            if (found != null) items.add(GItem("Copy this image") { if (active === d) copyPdfImage(found) })
-            val canPaste = canPaste()
-            items.add(GItem(if (canPaste) "Paste image here" else "Paste image (no image on clipboard)", enabled = canPaste) {
+            items.add(GItem("Paste", enabled = canPaste()) {
                 if (active === d) { pendingPlace = pt; paste(d) }
             })
+            items.add(GItem("Clipboard") { if (active === d) showClipboard(d, pt) })
+            if (found != null) items.add(GItem("Copy this image") { if (active === d) copyPdfImage(found) })
             items.add(GItem("Blank page after this page") {
                 val idx = d.pages.indexOf(pt.page)
                 if (active === d && idx >= 0) askNewPage(idx + 1)
@@ -3890,9 +3893,10 @@ class MainActivity : ComponentActivity() {
         val sh = pdfView.height.toFloat()
         val gap = dp(10).toFloat()
         val m = dp(6).toFloat()
-        var y = b + gap
-        if (y + bh > sh - m) y = t - gap - bh                  // no room below: go above
-        if (y < m) y = (sh - bh - m).coerceAtMost(b + gap)     // image fills the screen: stay on screen
+        // above the image by default; below it only when there's no room above
+        var y = t - gap - bh
+        if (y < dp(60)) y = b + gap                             // (keeps clear of the floating pen bar at the top)
+        if (y + bh > sh - m) y = m                              // image fills the screen: stay on screen, at the top
         y = y.coerceIn(m, maxOf(m, sh - bh - m))
         val x = ((l + r) / 2f - bw / 2f).coerceIn(m, maxOf(m, sw - bw - m))
         selBar.translationX = pdfView.left + x
@@ -3995,6 +3999,178 @@ class MainActivity : ComponentActivity() {
     private fun canPaste(): Boolean =
         clipboardHasSelection() || clipboardImageUri() != null || Pics.clip?.file?.exists() == true
 
+    /**
+     * "Clipboard": a small window showing what's on the tablet's clipboard (a picture, a Zen selection or
+     * text), with Paste when it can go on the page.
+     */
+    private fun showClipboard(d: Doc, pt: PlacePoint) {
+        lifecycleScope.launch {
+            val cm = getSystemService(ClipboardManager::class.java)
+            val sel = if (clipboardHasSelection()) Pics.selClip else null
+            val uri = if (sel == null) clipboardImageUri() else null
+            val own = Pics.clip?.takeIf { it.file.exists() }
+            val text: String? = if (sel == null && uri == null) try {
+                cm?.primaryClip?.let { c -> if (c.itemCount > 0) c.getItemAt(0).coerceToText(this@MainActivity)?.toString() else null }
+                    ?.takeIf { it.isNotBlank() }
+            } catch (e: Exception) {
+                null
+            } else null
+            val maxSide = dp(320)
+            // a picture to show: the clipboard's image, Zen's own copied image, or a drawing of the selection
+            val pic: android.graphics.Bitmap? = withContext(Dispatchers.IO) {
+                try {
+                    when {
+                        sel != null -> drawSelectionPreview(sel, maxSide)
+                        uri != null -> decodeUriThumb(uri, maxSide)
+                        text == null && own != null -> Pics.decodeForScreen(own.file, maxSide)
+                        else -> null
+                    }
+                } catch (t: Throwable) {
+                    null
+                }
+            }
+            if (active !== d) return@launch
+            val box = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(24), dp(6), dp(24), dp(2))
+            }
+            val caption = when {
+                sel != null -> "Zen selection · ${sel.strokes.size} stroke${if (sel.strokes.size == 1) "" else "s"}" +
+                    if (sel.images.isNotEmpty()) " · ${sel.images.size} image${if (sel.images.size == 1) "" else "s"}" else ""
+                // an image Android won't let Zen open (its app keeps it private): say whose it is
+                uri != null && pic == null -> "An image from ${providerAppName(uri)}, which doesn't let other apps open it"
+                uri != null || (text == null && own != null) -> "Image"
+                text != null -> "Text (can't be pasted onto the page)"
+                else -> "The clipboard is empty"
+            }
+            if (pic != null) {
+                box.addView(ImageView(this@MainActivity).apply {
+                    setImageBitmap(pic)
+                    adjustViewBounds = true
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    background = rounded(0xFF2C2C2E.toInt(), 8)
+                    clipToOutline = true
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(8)
+                })
+            } else if (text != null) {
+                box.addView(ScrollView(this@MainActivity).apply {
+                    addView(TextView(this@MainActivity).apply {
+                        this.text = text
+                        textSize = 14f
+                        setTextColor(TEXT)
+                        setTextIsSelectable(true)
+                        setPadding(dp(12), dp(10), dp(12), dp(10))
+                        background = rounded(0xFF2C2C2E.toInt(), 8)
+                    })
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    // long text scrolls inside a fixed height
+                    if (text.length > 300) dp(220) else ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = dp(8) })
+            }
+            if (pic == null && text == null) {
+                // nothing to preview: a placeholder card, with a short line saying why
+                box.addView(FrameLayout(this@MainActivity).apply {
+                    background = rounded(0xFF2C2C2E.toInt(), 8)
+                    addView(ImageView(this@MainActivity).apply {
+                        setImageResource(if (uri != null) R.drawable.ic_image else R.drawable.ic_clipboard_empty)
+                        imageTintList = ColorStateList.valueOf(TEXT_DIM)
+                    }, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+                }, LinearLayout.LayoutParams(dp(220), dp(130)).apply { bottomMargin = dp(8) })
+                box.addView(TextView(this@MainActivity).apply {
+                    this.text = caption
+                    textSize = 12f
+                    setTextColor(TEXT_DIM)
+                    gravity = Gravity.CENTER
+                })
+            }
+            // (with a preview, the preview speaks for itself)
+            val b = ZenBuilder().setTitle("Clipboard").setView(box)
+            if (canPaste()) b.setPositiveButton("Paste here") { _, _ ->
+                if (active === d) { pendingPlace = pt; paste(d) }
+            }
+            b.setNegativeButton("Close", null)
+            compactShow(b.create(), 380)
+        }
+    }
+
+    /**
+     * The file behind a link from Zen's own file share (images it copied, shared or photographed), or null
+     * for any other link. Zen reads these files directly instead of through the link.
+     */
+    private fun ownFileFor(uri: Uri): File? {
+        if (uri.authority != "$packageName.files") return null
+        val seg = uri.pathSegments
+        if (seg.size < 2 || seg[0] !in setOf("share", "camera", "clip")) return null
+        return try {
+            val base = File(cacheDir, seg[0]).canonicalFile
+            val f = File(base, seg.drop(1).joinToString("/")).canonicalFile
+            if (f.path.startsWith(base.path + File.separator)) f else null // never outside those folders
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Opens an image link from the clipboard, reading Zen's own copies straight from their files. */
+    private fun openClipUri(uri: Uri): java.io.InputStream? =
+        ownFileFor(uri)?.let { f -> if (f.exists()) f.inputStream() else null } ?: contentResolver.openInputStream(uri)
+
+    /** Name of the app a content link belongs to (e.g. "mac2tab"), for messages. */
+    private fun providerAppName(uri: Uri): String = try {
+        val info = uri.authority?.let { packageManager.resolveContentProvider(it, 0) }
+        info?.applicationInfo?.loadLabel(packageManager)?.toString() ?: "another app"
+    } catch (e: Exception) {
+        "another app"
+    }
+
+    /** A small picture of an image on the clipboard (decoded at a reduced size). */
+    private fun decodeUriThumb(uri: Uri, maxSide: Int): android.graphics.Bitmap? {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        openClipUri(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        return openClipUri(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+    }
+
+    /** Draws a copied Zen selection (its strokes and images) small, on white, to show it. */
+    private fun drawSelectionPreview(sel: LassoClip, maxSide: Int): android.graphics.Bitmap? {
+        val w = sel.w.coerceAtLeast(1f)
+        val h = sel.h.coerceAtLeast(1f)
+        val pad = 8f
+        val sc = (maxSide - 2 * pad) / maxOf(w, h)
+        val bw = (w * sc + 2 * pad).toInt().coerceAtLeast(1)
+        val bh = (h * sc + 2 * pad).toInt().coerceAtLeast(1)
+        val bmp = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
+        bmp.eraseColor(Color.WHITE)
+        val c = android.graphics.Canvas(bmp)
+        c.translate(pad, pad)
+        c.scale(sc, sc)
+        val bp = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        for (im in sel.images) {
+            val ib = Pics.decodeForScreen(im.file, 400) ?: continue
+            val st = im.st
+            val src = android.graphics.Rect((st.cl * ib.width).toInt(), (st.ct * ib.height).toInt(),
+                (st.cr * ib.width).toInt(), (st.cb * ib.height).toInt())
+            c.drawBitmap(ib, src, RectF(st.x, st.y, st.x + st.w, st.y + st.h), bp)
+        }
+        val ink = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeCap = android.graphics.Paint.Cap.ROUND
+            strokeJoin = android.graphics.Paint.Join.ROUND
+        }
+        for (st in sel.strokes) {
+            ink.color = st.color
+            ink.alpha = if (st.highlighter) (HIGHLIGHT_ALPHA * 255).toInt() else 255
+            ink.strokeWidth = maxOf(st.width, 1f / sc)
+            ink.pathEffect = linePattern(st.style, st.width)?.let { android.graphics.DashPathEffect(it, 0f) }
+            c.drawPath(st.path, ink)
+        }
+        return bmp
+    }
+
     /** Pastes the clipboard image: Margin's own copy keeps its size and crop; others are imported. */
     private fun paste(d: Doc) {
         if (clipboardHasSelection()) {
@@ -4004,7 +4180,14 @@ class MainActivity : ComponentActivity() {
         val uri = clipboardImageUri()
         val own = Pics.clip
         if (uri != null && !(uri.authority == "$packageName.files" && own != null && own.file.exists())) {
-            insertImage(d, { contentResolver.openInputStream(uri) }, cropAfter = false)
+            val mine = ownFileFor(uri)
+            if (uri.authority == "$packageName.files" && (mine == null || !mine.exists())) {
+                pendingPlace = null
+                toast("The copied image is no longer available · copy it again")
+                return
+            }
+            // an image Zen copied itself is read straight from its file (Android may refuse the app its own link)
+            insertImage(d, { if (mine != null) mine.inputStream() else contentResolver.openInputStream(uri) }, cropAfter = false)
         } else if (own != null && own.file.exists()) {
             pasteImage(d)
         } else {

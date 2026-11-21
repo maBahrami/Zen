@@ -301,7 +301,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     private val activeMarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xCC0A84FF.toInt()
+        color = 0x660A84FF // soft blue: marks the active side without shouting
     }
     /**
      * Pulled past the end and held: the user wants a new page. [atStart] = pulled down at the first page
