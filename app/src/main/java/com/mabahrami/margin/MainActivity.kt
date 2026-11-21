@@ -296,7 +296,7 @@ class MainActivity : ComponentActivity() {
         v.onSelectionRect = { l, t, r, b -> if (v === pdfView) placeSelBar(l, t, r, b) }
         v.onLassoRect = { r ->
             if (v === pdfView) {
-                if (r == null) lassoBar.visibility = View.GONE
+                if (r == null) popOut(lassoBar)
                 else {
                     popIn(lassoBar)
                     placeBar(lassoBar, r.left, r.top, r.right, r.bottom)
@@ -763,13 +763,28 @@ class MainActivity : ComponentActivity() {
         hlBtn.setImageResource(if (pdfView.hlStraight) R.drawable.ic_highlighter_straight else R.drawable.ic_highlighter)
         setToolSelected(hlBtn, drawing && hlMode)
         setToolSelected(eraserBtn, pdfView.eraserMode)
+        // in dark view the palette shows the colours as they are drawn there (black shows as white)
+        val dark = active?.dark == true
+        paletteDark = dark
         for ((c, v) in swatches) {
             val selected = c == pdfView.penColor && !pdfView.eraserMode
-            v.background = GradientDrawable().apply {
+            // (highlights keep their own colours in dark view, so the highlighter palette doesn't change)
+            val shown = if (dark && !hlMode) Dark.ink(c) else c
+            val fill = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                setColor(c)
-                // white inner frame marks the current colour
-                if (selected) setStroke(dp(2), Color.WHITE)
+                setColor(shown)
+            }
+            v.background = if (!selected) fill else {
+                // the current colour gets a small dot in its middle (dark on light colours, white on dark ones)
+                val light = androidx.core.graphics.ColorUtils.calculateLuminance(shown) > 0.6
+                val dot = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(if (light) 0xD91C1C1E.toInt() else 0xF2FFFFFF.toInt())
+                }
+                android.graphics.drawable.LayerDrawable(arrayOf(fill, dot)).apply {
+                    setLayerSize(1, dp(7), dp(7))
+                    setLayerGravity(1, Gravity.CENTER)
+                }
             }
         }
         val w = pdfView.penWidth
@@ -856,9 +871,13 @@ class MainActivity : ComponentActivity() {
         markDirty(d) // remembers the choice in the working state (doesn't mark the file unsaved)
     }
 
+    /** Whether the palette currently shows dark-view colours. */
+    private var paletteDark = false
+
     private fun updateDarkButton() {
         val d = active
         val dark = d?.dark == true
+        if (dark != paletteDark) refreshTool() // the palette follows light / dark view
         darkBtn.setImageResource(if (dark) R.drawable.ic_light else R.drawable.ic_dark)
         val desc = if (dark) "Light view" else "Dark view"
         darkBtn.contentDescription = desc
@@ -944,9 +963,10 @@ class MainActivity : ComponentActivity() {
             background = rounded(Color.TRANSPARENT, 7)
             clipToOutline = true
         }
+        val darkView = active?.dark == true
         for (c in COLORS) {
             strip.addView(View(this).apply {
-                setBackgroundColor(c)
+                setBackgroundColor(if (darkView) Dark.ink(c) else c)
                 isClickable = true
                 setOnClickListener {
                     pdfView.lassoRecolor(c)
@@ -1781,8 +1801,8 @@ class MainActivity : ComponentActivity() {
     private fun dropSelection() {
         pdfView.clearSelection()
         pdfView.clearLasso()
-        selBar.visibility = View.GONE
-        lassoBar.visibility = View.GONE
+        popOut(selBar)
+        popOut(lassoBar)
     }
 
     /** Makes [v] the active canvas (tools move along). Doesn't touch tabs or panels. */
@@ -2457,7 +2477,29 @@ class MainActivity : ComponentActivity() {
     }
 
     /** A floating bar that was hidden appears with a short pop instead of blinking in. */
+    /** A floating bar going away shrinks and fades instead of blinking out. */
+    private fun popOut(v: View) {
+        if (v.visibility != View.VISIBLE || v.tag == "hiding") return
+        v.tag = "hiding"
+        v.animate().cancel()
+        v.animate().alpha(0f).scaleX(0.85f).scaleY(0.85f).setDuration(130)
+            .setInterpolator(android.view.animation.AccelerateInterpolator())
+            .withEndAction {
+                if (v.tag == "hiding") {
+                    v.visibility = View.GONE
+                    v.tag = null
+                }
+            }.start()
+    }
+
     private fun popIn(v: View) {
+        if (v.tag == "hiding") {
+            // it was just going away: come back instead
+            v.tag = null
+            v.animate().cancel()
+            v.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(120).start()
+            return
+        }
         if (v.visibility == View.VISIBLE) return
         v.visibility = View.VISIBLE
         v.alpha = 0f
@@ -2485,7 +2527,58 @@ class MainActivity : ComponentActivity() {
      */
     /** Button actions of each dialog made with [ZenBuilder], so the dialog can animate away before running them. */
     private val dialogButtons = java.util.WeakHashMap<AlertDialog, Map<Int, android.content.DialogInterface.OnClickListener?>>()
-    private val closingDialogs = java.util.Collections.newSetFromMap(java.util.WeakHashMap<AlertDialog, Boolean>())
+    private val closingDialogs = java.util.Collections.newSetFromMap(java.util.WeakHashMap<Dialog, Boolean>())
+
+    /** How dark the screen gets behind a dialog. */
+    private val dialogDim = 0.45f
+
+    /** Fades the darkening behind [dialog] from [from] to [to] along with its animation. */
+    private fun animateDim(dialog: Dialog, from: Float, to: Float, ms: Long) {
+        val win = dialog.window ?: return
+        if (from == to) return
+        android.animation.ValueAnimator.ofFloat(from, to).apply {
+            duration = ms
+            addUpdateListener {
+                try {
+                    if (dialog.isShowing) win.setDimAmount(it.animatedValue as Float)
+                } catch (ignored: Exception) {
+                }
+            }
+            start()
+        }
+    }
+
+    /**
+     * Grows [dialog] out of the point last tapped (the reverse is [closeDialog]); its darkening fades in
+     * at the same time. Call right after show().
+     */
+    private fun growIn(dialog: Dialog, dim: Float) {
+        val decor = dialog.window?.decorView ?: return
+        decor.alpha = 0f
+        if (dim > 0f) {
+            dialog.window?.setDimAmount(0f)
+            animateDim(dialog, 0f, dim, 220)
+        }
+        decor.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (decor.viewTreeObserver.isAlive) decor.viewTreeObserver.removeOnPreDrawListener(this)
+                val loc = IntArray(2)
+                decor.getLocationOnScreen(loc)
+                if (lastTouchX >= 0f && decor.width > 0) {
+                    decor.pivotX = lastTouchX - loc[0]
+                    decor.pivotY = lastTouchY - loc[1]
+                } else {
+                    decor.pivotX = decor.width / 2f
+                    decor.pivotY = decor.height / 2f
+                }
+                decor.scaleX = 0.35f
+                decor.scaleY = 0.35f
+                decor.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220)
+                    .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0.9f, 0.25f, 1f)).start()
+                return true
+            }
+        })
+    }
 
     /** AlertDialog.Builder that remembers its button actions (see [takeOverClosing]). */
     private inner class ZenBuilder : AlertDialog.Builder(this@MainActivity) {
@@ -2513,9 +2606,12 @@ class MainActivity : ComponentActivity() {
      * Like minimising on macOS: the dialog shrinks back into the point it grew out of, then [then] runs
      * (a button's action, or cancelling) and the window closes.
      */
-    private fun closeDialog(dialog: AlertDialog, then: () -> Unit) {
+    private fun closeDialog(dialog: Dialog, then: () -> Unit) {
         if (!closingDialogs.add(dialog)) return
         val decor = dialog.window?.decorView
+        // the darkening behind it fades out together with the dialog
+        val dim = dialog.window?.attributes?.dimAmount ?: 0f
+        if (dim > 0f && decor != null && decor.isAttachedToWindow) animateDim(dialog, dim, 0f, 200)
         fun finish() {
             try {
                 dialog.window?.setWindowAnimations(0) // no second (system) animation
@@ -2541,9 +2637,9 @@ class MainActivity : ComponentActivity() {
      * The dialog's buttons, a tap outside it and Back all close it with [closeDialog] instead of vanishing.
      * Button actions run in the same order as before (action, then close).
      */
-    private fun takeOverClosing(dialog: AlertDialog) {
-        val handlers = dialogButtons[dialog]
-        if (handlers != null) {
+    private fun takeOverClosing(dialog: Dialog) {
+        val handlers = (dialog as? AlertDialog)?.let { dialogButtons[it] }
+        if (handlers != null && dialog is AlertDialog) {
             for ((which, listener) in handlers) {
                 dialog.getButton(which)?.setOnClickListener {
                     closeDialog(dialog) { listener?.onClick(dialog, which) }
@@ -2587,28 +2683,8 @@ class MainActivity : ComponentActivity() {
         dialog.window?.setWindowAnimations(R.style.ZenDialogAnim)
         dialog.show()
         compact(dialog, widthDp)
-        val decor = dialog.window?.decorView ?: return dialog
-        decor.alpha = 0f
         takeOverClosing(dialog)
-        decor.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
-            override fun onPreDraw(): Boolean {
-                if (decor.viewTreeObserver.isAlive) decor.viewTreeObserver.removeOnPreDrawListener(this)
-                val loc = IntArray(2)
-                decor.getLocationOnScreen(loc)
-                if (lastTouchX >= 0f && decor.width > 0) {
-                    decor.pivotX = lastTouchX - loc[0]
-                    decor.pivotY = lastTouchY - loc[1]
-                } else {
-                    decor.pivotX = decor.width / 2f
-                    decor.pivotY = decor.height / 2f
-                }
-                decor.scaleX = 0.35f
-                decor.scaleY = 0.35f
-                decor.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220)
-                    .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0.9f, 0.25f, 1f)).start()
-                return true
-            }
-        })
+        growIn(dialog, dialogDim)
         return dialog
     }
 
@@ -3711,7 +3787,7 @@ class MainActivity : ComponentActivity() {
 
     private fun updateSelBar(item: ImageItem?) {
         if (item == null) {
-            selBar.visibility = View.GONE
+            popOut(selBar)
             return
         }
         lockBtn.text = if (item.locked) "Unlock" else "Lock"
@@ -3869,7 +3945,7 @@ class MainActivity : ComponentActivity() {
                 gravity = Gravity.CENTER
                 setPadding(dp(8), dp(8), dp(8), dp(12))
             }
-            bar.addView(button("Cancel") { dialog.dismiss() })
+            bar.addView(button("Cancel") { closeDialog(dialog) {} })
             bar.addView(button("Reset") { crop.reset() }, lp(10))
             bar.addView(button("Done") {
                 val r = crop.result()
@@ -3880,11 +3956,15 @@ class MainActivity : ComponentActivity() {
                         it.h = it.w / it.cropAspect
                     }
                 }
-                dialog.dismiss()
+                closeDialog(dialog) {}
             }, lp(10))
             box.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             dialog.setContentView(box)
+            dialog.window?.setWindowAnimations(R.style.ZenDialogAnim)
             dialog.show()
+            // grows out of the image (where Crop was tapped) and shrinks back into it when it closes
+            takeOverClosing(dialog)
+            growIn(dialog, 0f)
         }
     }
 }

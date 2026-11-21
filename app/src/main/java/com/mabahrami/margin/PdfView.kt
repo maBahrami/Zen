@@ -69,6 +69,40 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 invalidate()
             }
         }
+    // ---- eraser circle: shows what the eraser covers, while erasing (and while the pen hovers in eraser mode) ----
+    private var eraserVisible = false
+    private var eraserX = 0f
+    private var eraserY = 0f
+    private val eraserFill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val eraserRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+
+    private fun showEraser(x: Float, y: Float) {
+        eraserX = x
+        eraserY = y
+        eraserVisible = true
+        invalidate()
+    }
+
+    private fun hideEraser() {
+        if (!eraserVisible) return
+        eraserVisible = false
+        invalidate()
+    }
+
+    /** S Pen hovering: in eraser mode (or with the side button held) the eraser circle follows it. */
+    override fun onHoverEvent(e: MotionEvent): Boolean {
+        val t = e.getToolType(0)
+        val pen = t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER
+        val erasing = eraserMode || t == MotionEvent.TOOL_TYPE_ERASER ||
+            (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
+        when (e.actionMasked) {
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE ->
+                if (pen && erasing && !lassoMode && mode == MODE_NONE) showEraser(e.x, e.y) else if (mode != MODE_ERASE) hideEraser()
+            MotionEvent.ACTION_HOVER_EXIT -> if (mode != MODE_ERASE) hideEraser()
+        }
+        return super.onHoverEvent(e)
+    }
+
     private val activeMarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = 0xCC0A84FF.toInt()
@@ -1191,6 +1225,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             lastReportedPage = cur
             onCurrentPage?.invoke(cur)
         }
+        if (eraserVisible) {
+            // soft disc with a thin ring, readable on light and dark paper
+            val dark = doc?.dark == true
+            eraserFill.color = if (dark) 0x26FFFFFF else 0x1A000000
+            eraserRing.color = if (dark) 0xB3FFFFFF.toInt() else 0x99000000.toInt()
+            eraserRing.strokeWidth = 1.2f * density
+            canvas.drawCircle(eraserX, eraserY, eraserPx, eraserFill)
+            canvas.drawCircle(eraserX, eraserY, eraserPx, eraserRing)
+        }
         if (activeMark) {
             val w = 2f * density
             activeMarkPaint.strokeWidth = w
@@ -1605,6 +1648,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        val handled = handleTouch(e)
+        // the eraser circle stays only while erasing
+        if (mode != MODE_ERASE && eraserVisible &&
+            (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL || e.actionMasked == MotionEvent.ACTION_POINTER_UP)) hideEraser()
+        return handled
+    }
+
+    private fun handleTouch(e: MotionEvent): Boolean {
         if (e.actionMasked == MotionEvent.ACTION_DOWN) onTouchStart?.invoke(this)
         val d = doc ?: return true
         if (d.scale <= 0f) return true
@@ -1683,6 +1734,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                             }
                         }
                         if (mode == MODE_INK) livePath = strokePath(livePts, liveSize, livePoly, liveStyle, liveWidth)
+                        if (mode == MODE_ERASE) showEraser(ex, ey)
                         invalidate()
                     }
                 }
@@ -1821,6 +1873,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             mode = MODE_ERASE
             erased.clear()
             eraseAt(d, x, y)
+            showEraser(x, y)
         } else {
             mode = if (startStroke(d, x, y)) MODE_INK else MODE_NONE
         }
