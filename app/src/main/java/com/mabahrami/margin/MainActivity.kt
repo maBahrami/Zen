@@ -48,6 +48,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -3013,8 +3014,199 @@ class MainActivity : ComponentActivity() {
         showGenieMenu(anchor, listOf(
             GItem("Insert blank page after") { if (ok()) askNewPage(i + 1) },
             GItem("Insert PDF after this page") { if (ok()) { insertAfterIndex = i; pickPdf(d) } },
+            GItem("Copy page") { if (ok()) copyPages(d, listOf(i), cut = false) },
+            GItem("Cut page") { if (ok()) copyPages(d, listOf(i), cut = true) },
+            GItem(pasteLabel(), enabled = PageClipboard.clip != null) { if (ok()) pastePages(d, i + 1) },
             GItem("Delete page", color = 0xFFFF453A.toInt()) { if (ok() && !pdfView.deletePage(i)) toast("Can't delete the only page") },
         ))
+    }
+
+    private fun pasteLabel(): String {
+        val n = PageClipboard.clip?.pages?.size ?: 1
+        return if (n == 1) "Paste page after" else "Paste $n pages after"
+    }
+
+    /**
+     * Copies pages [idx] of [d] to Zen's page clipboard: private snapshots of their PDFs and images, so they
+     * paste fine later even if this tab is closed. With [cut] the pages are deleted, but only once the copy
+     * is safely stored (Undo brings them back).
+     */
+    private fun copyPages(d: Doc, idx: List<Int>, cut: Boolean) {
+        if (active !== d || pdfView.doc !== d) return
+        val pages = idx.filter { it in 0 until d.pageCount }.distinct().sorted().map { d.pages[it] }
+        if (pages.isEmpty()) return
+        if (cut && pages.size >= d.pageCount) {
+            toast(if (d.pageCount == 1) "Can't cut the only page" else "Can't cut every page")
+            return
+        }
+        // read the pages now (main thread); only the files are copied in the background
+        class Raw(val p: Page, val srcName: String?, val srcFile: File?, val strokes: List<Stroke>, val imgs: List<ClipImage>)
+        val raws = pages.map { p ->
+            val sp = if (p.isBlank) null else d.sources.getOrNull(p.file)
+            val usable = sp != null && p.src < sp.w.size
+            Raw(
+                p,
+                if (usable) sp!!.name else null,
+                if (usable) File(d.dir, sp!!.name) else null,
+                ArrayList(p.strokes),
+                p.images.map { ClipImage(File(d.dir, it.file), it.imgW, it.imgH, it.state()) },
+            )
+        }
+        val ownL = pages.map { it.mL }
+        val ownR = pages.map { it.mR }
+        val ownP = pages.map { it.mPaper }
+        val effL = pages.map { d.leftOf(it) }
+        val effR = pages.map { d.rightOf(it) }
+        val effP = pages.map { d.marginPaperOf(it) }
+        lifecycleScope.launch {
+            try {
+                val root = File(cacheDir, "pageclip")
+                val dir = File(root, UUID.randomUUID().toString())
+                val result = withContext(Dispatchers.IO) {
+                    dir.mkdirs()
+                    // one snapshot per PDF, however many pages use it
+                    val files = HashMap<String, File>()
+                    var k = 0
+                    for (r in raws) {
+                        val nm = r.srcName ?: continue
+                        if (files.containsKey(nm)) continue
+                        val src = r.srcFile ?: continue
+                        if (!src.exists()) continue
+                        val f = File(dir, "pdf_${k++}.pdf")
+                        src.copyTo(f, overwrite = true)
+                        files[nm] = f
+                    }
+                    val clipPages = raws.mapIndexed { n, r ->
+                        val imgs = r.imgs.mapNotNull { ci ->
+                            if (!ci.file.exists()) return@mapNotNull null
+                            val f = File(dir, "${UUID.randomUUID()}.jpg")
+                            ci.file.copyTo(f, overwrite = true)
+                            ClipImage(f, ci.imgW, ci.imgH, ci.st)
+                        }
+                        // a page whose PDF is missing comes back as a blank page of the same size
+                        val hasPdf = r.srcName != null && files.containsKey(r.srcName)
+                        ClipPage(
+                            r.p.w, r.p.h, r.p.paper,
+                            if (hasPdf) r.srcName else null, if (hasPdf) r.p.src else -1,
+                            ownL[n], ownR[n], ownP[n], effL[n], effR[n], effP[n],
+                            r.strokes, imgs,
+                        )
+                    }
+                    PageClip(d.id, clipPages, files)
+                }
+                PageClipboard.clip = result
+                // older snapshots are no longer needed
+                withContext(Dispatchers.IO) {
+                    root.listFiles()?.forEach { if (it != dir) it.deleteRecursively() }
+                }
+                val n = result.pages.size
+                val what = if (n == 1) "Page" else "$n pages"
+                if (cut && !d.closed && active === d && pdfView.doc === d) {
+                    // delete from the end so earlier indices stay right
+                    for (p in pages.reversed()) {
+                        val at = d.pages.indexOf(p)
+                        if (at >= 0) pdfView.deletePage(at)
+                    }
+                    pagesPanel.refresh()
+                    toast("$what cut · paste from a page's ⋮ menu (Undo brings it back)")
+                } else {
+                    toast("$what copied · paste from a page's ⋮ menu")
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                Log.e(TAG, "copy pages", t)
+                toast("Copy failed: ${t.message ?: t.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Pastes the copied pages into [d] at index [at]: the same PDF if they came from this tab, otherwise a copy of it. */
+    private fun pastePages(d: Doc, at: Int) {
+        val clip = PageClipboard.clip ?: return
+        lifecycleScope.launch {
+            val newFiles = ArrayList<File>()
+            val newSources = ArrayList<Pair<String, SourcePdf>>()
+            var attached = false
+            try {
+                val index = HashMap<String, Int>()
+                for (nm in clip.pages.mapNotNull { it.srcName }.distinct()) {
+                    if (clip.docId == d.id) {
+                        val k = d.sources.indexOfFirst { it.name == nm && it.w.isNotEmpty() }
+                        if (k >= 0) {
+                            index[nm] = k
+                            continue
+                        }
+                    }
+                    val snap = clip.files[nm] ?: continue
+                    val name = "src_${UUID.randomUUID()}.pdf"
+                    val file = File(d.dir, name)
+                    withContext(Dispatchers.IO) {
+                        val tmp = File(d.dir, "$name.tmp")
+                        snap.inputStream().use { inp -> FileOutputStream(tmp).use { out -> inp.copyTo(out); out.fd.sync() } }
+                        if (!tmp.renameTo(file)) throw IOException("can't store the file")
+                    }
+                    newFiles.add(file)
+                    newSources.add(nm to withContext(renderDispatcher) { openSource(file, name) })
+                }
+                val rels = withContext(Dispatchers.IO) {
+                    clip.pages.map { cp ->
+                        cp.images.mapNotNull { ci ->
+                            if (!ci.file.exists()) return@mapNotNull null
+                            val rel = "images/${UUID.randomUUID()}.jpg"
+                            val target = File(d.dir, rel)
+                            target.parentFile?.mkdirs()
+                            ci.file.copyTo(target, overwrite = true)
+                            newFiles.add(target)
+                            rel to ci
+                        }
+                    }
+                }
+                if (d.closed) throw CancellationException("tab closed")
+                for ((nm, sp) in newSources) {
+                    d.sources.add(sp)
+                    index[nm] = d.sources.size - 1
+                }
+                attached = true
+                val same = clip.docId == d.id
+                val pages = clip.pages.mapIndexed { n, cp ->
+                    val fi = cp.srcName?.let { index[it] }
+                    val okPdf = fi != null && cp.srcIndex >= 0 && cp.srcIndex < d.sources[fi].w.size
+                    val pg = if (okPdf) Page(fi!!, cp.srcIndex, cp.w, cp.h, cp.paper) else Page(0, -1, cp.w, cp.h, cp.paper)
+                    if (same) {
+                        pg.mL = cp.ownL; pg.mR = cp.ownR; pg.mPaper = cp.ownPaper
+                    } else {
+                        // keep the margins it had; nothing extra where they match this tab's
+                        pg.mL = cp.effL.takeIf { it != d.marginL }
+                        pg.mR = cp.effR.takeIf { it != d.marginR }
+                        pg.mPaper = cp.effPaper.takeIf { it != d.marginPaper }
+                    }
+                    pg.strokes.addAll(cp.strokes)
+                    for ((rel, ci) in rels[n]) pg.images.add(ImageItem(rel, ci.imgW, ci.imgH).apply { set(ci.st) })
+                    pg
+                }
+                if (active !== d) activate(d)
+                val before = d.pageCount
+                pdfView.insertPages(at.coerceIn(0, d.pageCount), pages)
+                if (d.pageCount == before) {
+                    toast("Couldn't paste right now · try again")
+                    return@launch
+                }
+                pagesPanel.refresh()
+                toast(if (pages.size == 1) "Page pasted" else "${pages.size} pages pasted")
+            } catch (t: Throwable) {
+                // undo the half-done paste: nothing is left behind in the tab
+                if (!attached) {
+                    for ((_, sp) in newSources) renderExec.execute { sp.close() }
+                    withContext(NonCancellable + Dispatchers.IO) { newFiles.forEach { it.delete() } }
+                }
+                if (t is CancellationException) {
+                    if (d.closed) return@launch
+                    throw t
+                }
+                Log.e(TAG, "paste pages", t)
+                toast("Paste failed: ${t.message ?: t.javaClass.simpleName}")
+            }
+        }
     }
 
     private fun showPagesMenu(anchor: View) {
