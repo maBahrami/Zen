@@ -119,6 +119,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var pressAnchor: View
     private lateinit var pagesPanel: PagesPanel
     private lateinit var pageBadge: TextView
+    /** "Closed … · Undo" bar shown for a few seconds after a tab is closed. */
+    private lateinit var undoBar: LinearLayout
+    private lateinit var undoText: TextView
+    private val hideUndo = Runnable { hideUndoBar() }
     private lateinit var pagesPanelDivider: View
     /** Where the next inserted image goes (set by the long-press menu), or null for screen centre. */
     private var pendingPlace: PlacePoint? = null
@@ -141,6 +145,8 @@ class MainActivity : ComponentActivity() {
     private val renderExec = Executors.newSingleThreadExecutor()
     private val renderDispatcher = renderExec.asCoroutineDispatcher()
     private val ioExec = Executors.newSingleThreadExecutor()
+    /** Runs on the state-writing thread, so it comes after writes already queued there. */
+    private val ioDispatcher = ioExec.asCoroutineDispatcher()
     private val main = Handler(Looper.getMainLooper())
 
     private val dirtyDocs = LinkedHashSet<Doc>()
@@ -153,6 +159,41 @@ class MainActivity : ComponentActivity() {
     private val openLauncher =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             if (uris.isNotEmpty()) importAll(uris, fromPicker = true)
+        }
+
+    /** The file picker for PDFs, starting in a given folder (a favourite). */
+    private class OpenPdfsIn : androidx.activity.result.contract.ActivityResultContract<Uri?, List<Uri>>() {
+        override fun createIntent(context: android.content.Context, input: Uri?): Intent =
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/pdf"))
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                if (input != null) putExtra(DocumentsContract.EXTRA_INITIAL_URI, input)
+            }
+
+        override fun parseResult(resultCode: Int, intent: Intent?): List<Uri> {
+            if (resultCode != android.app.Activity.RESULT_OK || intent == null) return emptyList()
+            val out = ArrayList<Uri>()
+            val clip = intent.clipData
+            if (clip != null) {
+                for (k in 0 until clip.itemCount) clip.getItemAt(k).uri?.let { out.add(it) }
+            } else {
+                intent.data?.let { out.add(it) }
+            }
+            return out
+        }
+    }
+
+    private val openInFolderLauncher =
+        registerForActivityResult(OpenPdfsIn()) { uris ->
+            if (uris.isNotEmpty()) importAll(uris, fromPicker = true)
+        }
+
+    /** Picks a folder to add to the favourites. */
+    private val pickFavoriteLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) addFavoriteFolder(uri)
         }
 
     private val saveLauncher =
@@ -412,10 +453,11 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), dp(2), dp(6), dp(2))
         }
-        titleBar.addView(barIcon(R.drawable.ic_new, "New note") { askNewNote() }, barLp(0))
+        // Open first, then New note
         lateinit var openBtn: ImageView
         openBtn = barIcon(R.drawable.ic_open, "Open") { showOpenMenu(openBtn) }
-        titleBar.addView(openBtn, barLp())
+        titleBar.addView(openBtn, barLp(0))
+        titleBar.addView(barIcon(R.drawable.ic_new, "New note") { askNewNote() }, barLp())
         tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -627,6 +669,39 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.END,
         ).apply { setMargins(0, 0, dp(14), dp(14)) })
+        // after closing a tab: "Closed “name”  Undo" for 3 seconds
+        undoBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(4), dp(6), dp(4))
+            background = glass(18)
+            elevation = dp(10).toFloat()
+            visibility = View.GONE
+        }
+        undoText = TextView(this).apply {
+            textSize = 13f
+            setTextColor(TEXT)
+            maxLines = 1
+            maxWidth = dp(320)
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+        }
+        undoBar.addView(undoText)
+        undoBar.addView(TextView(this).apply {
+            text = "Undo"
+            textSize = 14f
+            setTextColor(ACCENT)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(14), dp(8), dp(12), dp(8))
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 14))
+            isClickable = true
+            setOnClickListener { undoLastClose() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = dp(8)
+        })
+        stage.addView(undoBar, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+        ).apply { setMargins(0, 0, 0, dp(18)) })
         // bar for the lasso selection
         lassoBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -679,6 +754,7 @@ class MainActivity : ComponentActivity() {
         penBtn.setImageResource(when (pdfView.penStyle) {
             LINE_DASHED -> R.drawable.ic_pen_dashed
             LINE_DOTTED -> R.drawable.ic_pen_dotted
+            LINE_WAVY -> R.drawable.ic_pen_wavy
             else -> R.drawable.ic_pen
         })
         val drawing = !pdfView.eraserMode && !pdfView.lassoMode
@@ -835,6 +911,7 @@ class MainActivity : ComponentActivity() {
             box.addView(v, LinearLayout.LayoutParams(dp(48), dp(40)).apply { marginStart = dp(2); marginEnd = dp(2) })
         }
         choice(R.drawable.ic_line_solid, "Solid line", LINE_SOLID)
+        choice(R.drawable.ic_line_wavy, "Corrugated (wavy) line", LINE_WAVY)
         choice(R.drawable.ic_line_dashed, "Dashed line", LINE_DASHED)
         choice(R.drawable.ic_line_dotted, "Dotted line", LINE_DOTTED)
         popup.showAsDropDown(penBtn, 0, dp(6))
@@ -1136,7 +1213,22 @@ class MainActivity : ComponentActivity() {
     }
 
     /** One row of a genie menu. */
-    private class GItem(val label: String, val enabled: Boolean = true, val color: Int = 0, val action: () -> Unit)
+    private class GItem(
+        val label: String,
+        val enabled: Boolean = true,
+        val color: Int = 0,
+        /** Leading icon (0 = none). */
+        val icon: Int = 0,
+        /** The main action of the menu: blue, a bit bolder, set apart by a line below it. */
+        val primary: Boolean = false,
+        /** Small grey title above this row, starting a new section (with a thin line). */
+        val header: String? = null,
+        /** Holding the row (e.g. to remove a favourite). */
+        val longAction: (() -> Unit)? = null,
+        /** Show only the icon, centred in a bordered button ([label] is its description). */
+        val iconOnly: Boolean = false,
+        val action: () -> Unit,
+    )
 
     /**
      * A popup that flows out of its anchor like the macOS genie effect and back into it when it closes
@@ -1221,18 +1313,69 @@ class MainActivity : ComponentActivity() {
             minimumWidth = dp(210)
         }
         val pop = GeniePop(box)
-        for (item in items) {
+        fun line() = View(this).apply { setBackgroundColor(0x26FFFFFF) }
+        for ((k, item) in items.withIndex()) {
+            if (item.header != null) {
+                if (k > 0) box.addView(line(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1).apply {
+                    topMargin = dp(4); bottomMargin = dp(2); marginStart = dp(8); marginEnd = dp(8)
+                })
+                box.addView(TextView(this).apply {
+                    text = item.header
+                    textSize = 11f
+                    setTextColor(TEXT_DIM)
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setPadding(dp(14), dp(6), dp(14), dp(2))
+                })
+            }
+            if (item.iconOnly) {
+                box.addView(FrameLayout(this).apply {
+                    contentDescription = item.label
+                    tooltipText = item.label
+                    background = RippleDrawable(ColorStateList.valueOf(0x22FFFFFF),
+                        GradientDrawable().apply {
+                            cornerRadius = dp(9).toFloat()
+                            setStroke(dp(1), 0x55FFFFFF)
+                        }, rounded(Color.WHITE, 9))
+                    isClickable = item.enabled
+                    if (item.enabled) setOnClickListener { pop.dismiss(item.action) }
+                    addView(ImageView(this@MainActivity).apply {
+                        setImageResource(item.icon)
+                        imageTintList = ColorStateList.valueOf(0xFFD1D1D6.toInt())
+                    }, FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER))
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)).apply {
+                    topMargin = dp(4); bottomMargin = dp(2); marginStart = dp(8); marginEnd = dp(8)
+                })
+                continue
+            }
             box.addView(TextView(this).apply {
                 text = item.label
-                textSize = 14f
-                setTextColor(if (!item.enabled) TEXT_DIM else if (item.color != 0) item.color else TEXT)
-                setPadding(dp(14), dp(10), dp(14), dp(10))
+                textSize = if (item.primary) 15f else 14f
+                if (item.primary) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (!item.enabled) TEXT_DIM else if (item.primary) ACCENT else if (item.color != 0) item.color else TEXT)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.MIDDLE
+                setPadding(dp(14), dp(if (item.primary) 11 else 10), dp(14), dp(if (item.primary) 11 else 10))
+                if (item.icon != 0) {
+                    val ic = androidx.core.content.ContextCompat.getDrawable(this@MainActivity, item.icon)?.mutate()
+                    ic?.setTint(if (!item.enabled) TEXT_DIM else if (item.primary) ACCENT else 0xFFD1D1D6.toInt())
+                    ic?.setBounds(0, 0, dp(18), dp(18))
+                    setCompoundDrawablesRelative(ic, null, null, null)
+                    compoundDrawablePadding = dp(10)
+                }
                 if (item.enabled) {
-                    background = RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), null, rounded(Color.WHITE, 9))
+                    background = RippleDrawable(ColorStateList.valueOf(0x22FFFFFF),
+                        if (item.primary) rounded(0x1A0A84FF, 9) else null, rounded(Color.WHITE, 9))
                     isClickable = true
                     setOnClickListener { pop.dismiss(item.action) }
+                    item.longAction?.let { la -> setOnLongClickListener { pop.dismiss(la); true } }
                 }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            // the main action is set apart from the rest
+            if (item.primary && k + 1 < items.size && items[k + 1].header == null) {
+                box.addView(line(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1).apply {
+                    topMargin = dp(4); bottomMargin = dp(4); marginStart = dp(8); marginEnd = dp(8)
+                })
+            }
         }
         pop.showAsDropDown(anchor, 0, 0)
     }
@@ -1256,7 +1399,7 @@ class MainActivity : ComponentActivity() {
                 setPadding(0, dp(6), 0, 0)
             })
         }
-        val dialog = AlertDialog.Builder(this)
+        val dialog = ZenBuilder()
             .setTitle("Rename")
             .setView(box)
             .setPositiveButton("Rename") { _, _ ->
@@ -1460,7 +1603,7 @@ class MainActivity : ComponentActivity() {
     /** Asked only after dropping a tab onto another one. */
     private fun askSideBySideFromDrop(dragged: Doc, target: Doc) {
         if (!docs.contains(dragged) || !docs.contains(target) || dragged === target) return
-        AlertDialog.Builder(this)
+        ZenBuilder()
             .setTitle("Show side by side?")
             .setMessage("“${baseName(target.name)}” on the left and “${baseName(dragged.name)}” on the right, grouped in one tab.")
             .setPositiveButton("Show side by side") { _, _ -> groupPair(target, dragged, focus = dragged) }
@@ -1889,7 +2032,7 @@ class MainActivity : ComponentActivity() {
                 prefs.edit().putFloat("split_ratio", splitRatio).apply()
             }
         }
-        AlertDialog.Builder(this)
+        ZenBuilder()
             .setTitle("Ungroup side by side?")
             .setMessage(keep?.let { "“${baseName(it.name)}” stays open, full width. Both files stay open in their tabs." }
                 ?: "Both files stay open in their tabs.")
@@ -1997,7 +2140,7 @@ class MainActivity : ComponentActivity() {
             closeDoc(d)
             return
         }
-        AlertDialog.Builder(this)
+        ZenBuilder()
             .setTitle("Close “${d.name}”?")
             .setMessage("This tab has changes that haven't been saved to a file. " +
                 "If you close it, you can still reopen it from the folder icon (Recently closed) for 7 days.")
@@ -2054,6 +2197,59 @@ class MainActivity : ComponentActivity() {
                 Log.e(TAG, "trash", e)
             }
         }
+        showUndoBar(d.id, d.name, idx)
+    }
+
+    // ---------------- undo close ----------------
+
+    private var lastClosedId: String? = null
+    private var lastClosedIndex = -1
+
+    /** "Closed “name”  Undo" at the bottom for 3 seconds (a newer close replaces it). */
+    private fun showUndoBar(id: String, name: String, index: Int) {
+        lastClosedId = id
+        lastClosedIndex = index
+        undoText.text = "Closed “${baseName(name)}”"
+        main.removeCallbacks(hideUndo)
+        undoBar.animate().cancel()
+        undoBar.visibility = View.VISIBLE
+        undoBar.alpha = 0f
+        undoBar.translationY = dp(16).toFloat()
+        undoBar.animate().alpha(1f).translationY(0f).setDuration(180)
+            .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+        undoBar.bringToFront()
+        main.postDelayed(hideUndo, 3000)
+    }
+
+    private fun hideUndoBar() {
+        main.removeCallbacks(hideUndo)
+        if (undoBar.visibility != View.VISIBLE) return
+        undoBar.animate().cancel()
+        undoBar.animate().alpha(0f).translationY(dp(16).toFloat()).setDuration(160)
+            .withEndAction { undoBar.visibility = View.GONE }.start()
+    }
+
+    /** Brings the last closed tab back (from Recently closed) to where it was in the tab bar. */
+    private fun undoLastClose() {
+        val id = lastClosedId ?: return
+        val at = lastClosedIndex
+        lastClosedId = null
+        hideUndoBar()
+        lifecycleScope.launch {
+            // on the writing thread: after its final save and move to Recently closed have finished
+            val c = withContext(ioDispatcher) {
+                try {
+                    Store.listTrash(this@MainActivity).firstOrNull { it.dir.name == id }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (c == null) {
+                toast("Couldn't find the closed tab")
+                return@launch
+            }
+            reopenClosed(c, at)
+        }
     }
 
     /** Open icon: open a PDF, or bring back a recently closed tab. */
@@ -2063,28 +2259,131 @@ class MainActivity : ComponentActivity() {
                 try { Store.listTrash(this@MainActivity) } catch (e: Exception) { emptyList() }
             }.take(10)
             val items = ArrayList<GItem>()
-            items.add(GItem("Open PDF…") { openLauncher.launch(arrayOf("application/pdf")) })
+            items.add(GItem("Open PDF…", icon = R.drawable.ic_open, primary = true) { openLauncher.launch(arrayOf("application/pdf")) })
+            // favourite folders: the file picker opens right there
+            val favs = favoriteFolders()
+            for ((k, f) in favs.withIndex()) {
+                items.add(GItem(f.second, icon = R.drawable.ic_folder_star,
+                    header = if (k == 0) "FAVORITE FOLDERS" else null,
+                    longAction = { askRemoveFavorite(f.first, f.second) }) { openInFavorite(f.first) })
+            }
+            // just a bordered + (its description is read out by screen readers)
+            items.add(GItem("Add favorite folder", icon = R.drawable.ic_plus, iconOnly = true,
+                header = if (favs.isEmpty()) "FAVORITE FOLDERS" else null) { pickFavorite() })
             val fmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
             if (closed.isEmpty()) {
-                items.add(GItem("No recently closed tabs", enabled = false) {})
+                items.add(GItem("No recently closed tabs", enabled = false, header = "RECENTLY CLOSED") {})
             } else {
-                for (c in closed) {
-                    items.add(GItem("Reopen “${baseName(c.name)}” · closed ${fmt.format(Date(c.closedAt))}") { reopenClosed(c) })
+                for ((k, c) in closed.withIndex()) {
+                    items.add(GItem("Reopen “${baseName(c.name)}” · closed ${fmt.format(Date(c.closedAt))}",
+                        header = if (k == 0) "RECENTLY CLOSED" else null) { reopenClosed(c) })
                 }
             }
             showGenieMenu(anchor, items)
         }
     }
 
-    private fun reopenClosed(c: Store.Closed) {
+    // ---------------- favourite folders ----------------
+
+    /** Favourite folders (tree uri, name), in the order they were added. */
+    private fun favoriteFolders(): List<Pair<String, String>> = try {
+        val arr = org.json.JSONArray(prefs.getString("fav_folders", "[]"))
+        (0 until arr.length()).mapNotNull { k ->
+            arr.optJSONObject(k)?.let { o ->
+                val u = o.optString("uri")
+                if (u.isEmpty()) null else u to o.optString("name").ifEmpty { "Folder" }
+            }
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    private fun saveFavoriteFolders(list: List<Pair<String, String>>) {
+        val arr = org.json.JSONArray()
+        for ((u, n) in list) arr.put(org.json.JSONObject().put("uri", u).put("name", n))
+        prefs.edit().putString("fav_folders", arr.toString()).apply()
+    }
+
+    private fun pickFavorite() {
+        try {
+            pickFavoriteLauncher.launch(null)
+        } catch (e: Exception) {
+            toast("No app available to pick folders")
+        }
+    }
+
+    /** A folder picked in the system picker: kept (with permission to look inside) as a favourite. */
+    private fun addFavoriteFolder(tree: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (e: Exception) {
+            // not needed to jump there; only nice to have
+        }
+        lifecycleScope.launch {
+            val name = withContext(Dispatchers.IO) {
+                try {
+                    val doc = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+                    contentResolver.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            } ?: tree.lastPathSegment?.substringAfterLast(':')?.substringAfterLast('/')?.ifEmpty { null } ?: "Folder"
+            val list = favoriteFolders().filter { it.first != tree.toString() } + (tree.toString() to name)
+            saveFavoriteFolders(list)
+            toast("“$name” added to favorite folders")
+        }
+    }
+
+    /** Opens the file picker inside the favourite folder. */
+    private fun openInFavorite(treeUri: String) {
+        val start = try {
+            val tree = Uri.parse(treeUri)
+            DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        } catch (e: Exception) {
+            null
+        }
+        try {
+            openInFolderLauncher.launch(start)
+        } catch (e: Exception) {
+            toast("No app available to open files")
+        }
+    }
+
+    private fun askRemoveFavorite(treeUri: String, name: String) {
+        ZenBuilder()
+            .setTitle("Remove “$name”?")
+            .setMessage("It's only removed from your favorite folders; the folder and its files stay as they are.")
+            .setPositiveButton("Remove") { _, _ ->
+                saveFavoriteFolders(favoriteFolders().filter { it.first != treeUri })
+                try {
+                    contentResolver.releasePersistableUriPermission(Uri.parse(treeUri), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (e: Exception) {
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .create()
+            .let { compactShow(it, 340) }
+    }
+
+    /** [at]: tab position to put it back at, or -1 for the end. */
+    private fun reopenClosed(c: Store.Closed, at: Int = -1) {
         lifecycleScope.launch {
             try {
                 val dir = withContext(Dispatchers.IO) { Store.restoreFromTrash(this@MainActivity, c) }
                 val d = withContext(renderDispatcher) { openDoc(dir.name, dir, c.name) }
-                addDoc(d, true)
+                if (docs.any { it.id == d.id }) { // already back
+                    renderExec.execute { d.closeRenderer() }
+                    return@launch
+                }
+                docs.add(if (at >= 0) at.coerceIn(0, docs.size) else docs.size, d)
+                keepPairTogether()
+                active = null
+                activate(d)
                 markDirty(d)
                 saveSession()
-                toast("Reopened ${baseName(d.name)}")
+                if (at < 0) toast("Reopened ${baseName(d.name)}")
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 Log.e(TAG, "reopen", t)
@@ -2176,6 +2475,105 @@ class MainActivity : ComponentActivity() {
      * Shows a dialog in the app's look ([compact]) that grows smoothly out of the point last tapped
      * (and fades away when closed).
      */
+    /** Button actions of each dialog made with [ZenBuilder], so the dialog can animate away before running them. */
+    private val dialogButtons = java.util.WeakHashMap<AlertDialog, Map<Int, android.content.DialogInterface.OnClickListener?>>()
+    private val closingDialogs = java.util.Collections.newSetFromMap(java.util.WeakHashMap<AlertDialog, Boolean>())
+
+    /** AlertDialog.Builder that remembers its button actions (see [takeOverClosing]). */
+    private inner class ZenBuilder : AlertDialog.Builder(this@MainActivity) {
+        private val handlers = HashMap<Int, android.content.DialogInterface.OnClickListener?>()
+
+        override fun setPositiveButton(text: CharSequence?, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder {
+            handlers[AlertDialog.BUTTON_POSITIVE] = listener
+            return super.setPositiveButton(text, listener)
+        }
+
+        override fun setNegativeButton(text: CharSequence?, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder {
+            handlers[AlertDialog.BUTTON_NEGATIVE] = listener
+            return super.setNegativeButton(text, listener)
+        }
+
+        override fun setNeutralButton(text: CharSequence?, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder {
+            handlers[AlertDialog.BUTTON_NEUTRAL] = listener
+            return super.setNeutralButton(text, listener)
+        }
+
+        override fun create(): AlertDialog = super.create().also { dialogButtons[it] = HashMap(handlers) }
+    }
+
+    /**
+     * Like minimising on macOS: the dialog shrinks back into the point it grew out of, then [then] runs
+     * (a button's action, or cancelling) and the window closes.
+     */
+    private fun closeDialog(dialog: AlertDialog, then: () -> Unit) {
+        if (!closingDialogs.add(dialog)) return
+        val decor = dialog.window?.decorView
+        fun finish() {
+            try {
+                dialog.window?.setWindowAnimations(0) // no second (system) animation
+                then()
+            } finally {
+                try {
+                    if (dialog.isShowing) dialog.dismiss()
+                } catch (ignored: Exception) {
+                }
+            }
+        }
+        if (decor == null || !decor.isAttachedToWindow) {
+            finish(); return
+        }
+        decor.animate().cancel()
+        decor.animate().alpha(0f).scaleX(0.12f).scaleY(0.12f).setDuration(200)
+            .setInterpolator(android.view.animation.AccelerateInterpolator(1.4f))
+            .withEndAction { finish() }
+            .start()
+    }
+
+    /**
+     * The dialog's buttons, a tap outside it and Back all close it with [closeDialog] instead of vanishing.
+     * Button actions run in the same order as before (action, then close).
+     */
+    private fun takeOverClosing(dialog: AlertDialog) {
+        val handlers = dialogButtons[dialog]
+        if (handlers != null) {
+            for ((which, listener) in handlers) {
+                dialog.getButton(which)?.setOnClickListener {
+                    closeDialog(dialog) { listener?.onClick(dialog, which) }
+                }
+            }
+        }
+        val win = dialog.window ?: return
+        val cb = win.callback ?: return
+        val decor = win.decorView
+        win.callback = object : android.view.Window.Callback by cb {
+            private var swallow = false
+
+            override fun dispatchTouchEvent(e: MotionEvent): Boolean {
+                if (swallow) {
+                    if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) swallow = false
+                    return true
+                }
+                val outside = e.actionMasked == MotionEvent.ACTION_OUTSIDE ||
+                    (e.actionMasked == MotionEvent.ACTION_DOWN &&
+                        (e.x < 0f || e.y < 0f || e.x > decor.width || e.y > decor.height))
+                if (outside) {
+                    swallow = e.actionMasked == MotionEvent.ACTION_DOWN
+                    closeDialog(dialog) { dialog.cancel() }
+                    return true
+                }
+                return cb.dispatchTouchEvent(e)
+            }
+
+            override fun dispatchKeyEvent(e: android.view.KeyEvent): Boolean {
+                if (e.keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+                    if (e.action == android.view.KeyEvent.ACTION_UP && !e.isCanceled) closeDialog(dialog) { dialog.cancel() }
+                    return true
+                }
+                return cb.dispatchKeyEvent(e)
+            }
+        }
+    }
+
     private fun compactShow(dialog: AlertDialog, widthDp: Int): AlertDialog {
         // the growing in comes from us; the system only does a quick fade-out when it closes
         dialog.window?.setWindowAnimations(R.style.ZenDialogAnim)
@@ -2183,6 +2581,7 @@ class MainActivity : ComponentActivity() {
         compact(dialog, widthDp)
         val decor = dialog.window?.decorView ?: return dialog
         decor.alpha = 0f
+        takeOverClosing(dialog)
         decor.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
             override fun onPreDraw(): Boolean {
                 if (decor.viewTreeObserver.isAlive) decor.viewTreeObserver.removeOnPreDrawListener(this)
@@ -2337,7 +2736,7 @@ class MainActivity : ComponentActivity() {
         box.addView(label("Paper"))
         box.addView(segmented(listOf("Blank", "Lined", "Grid"), paper) { paper = it; refresh() }, wrapLp())
         refresh()
-        AlertDialog.Builder(this)
+        ZenBuilder()
             .setTitle("New page")
             .setView(box)
             .setPositiveButton("Add") { _, _ ->
@@ -2500,7 +2899,7 @@ class MainActivity : ComponentActivity() {
         box.addView(label("Orientation"))
         box.addView(segmented(listOf("Portrait", "Landscape"), if (landscape) 1 else 0) { landscape = it == 1; refresh() }, wrapLp())
         refresh()
-        AlertDialog.Builder(this)
+        ZenBuilder()
             .setTitle("New note")
             .setView(box)
             .setPositiveButton("Create") { _, _ ->
@@ -2885,7 +3284,7 @@ class MainActivity : ComponentActivity() {
             setTextColor(TEXT_DIM)
             setPadding(0, 0, 0, dp(4))
         })
-        AlertDialog.Builder(this)
+        ZenBuilder()
             .setTitle("Margins")
             .setView(box)
             .setPositiveButton("Apply") { _, _ ->
@@ -2958,7 +3357,7 @@ class MainActivity : ComponentActivity() {
             setTextColor(TEXT_DIM)
             setPadding(0, dp(8), 0, 0)
         })
-        val b = AlertDialog.Builder(this).setTitle("Save").setView(box)
+        val b = ZenBuilder().setTitle("Save").setView(box)
         fun chosenName(): String {
             val n = input.text.toString().trim().replace('/', '_')
             return if (n.isEmpty()) current else n

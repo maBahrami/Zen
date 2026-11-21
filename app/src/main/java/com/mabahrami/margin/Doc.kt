@@ -1,6 +1,7 @@
 package com.mabahrami.margin
 
 import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import java.io.File
@@ -16,7 +17,7 @@ class Stroke(
     val color: Int,
     val width: Float,
     val pts: FloatArray,
-    /** Line style: LINE_SOLID, LINE_DASHED or LINE_DOTTED. */
+    /** Line style: LINE_SOLID, LINE_DASHED, LINE_DOTTED or LINE_WAVY. */
     val style: Int = LINE_SOLID,
     /** Highlighter: drawn with multiply blending so text underneath stays readable. */
     val highlighter: Boolean = false,
@@ -46,7 +47,7 @@ class Stroke(
         minX = a; minY = b; maxX = c; maxY = d
     }
 
-    val path: Path by lazy { buildPath(pts, pts.size, poly) }
+    val path: Path by lazy { strokePath(pts, pts.size, poly, style, width) }
 
     /** True if the circle (x, y, r) touches this stroke. */
     fun hits(x: Float, y: Float, r: Float): Boolean {
@@ -82,6 +83,47 @@ const val HIGHLIGHT_ALPHA = 0.55f
 const val LINE_SOLID = 0
 const val LINE_DASHED = 1
 const val LINE_DOTTED = 2
+/** Corrugated: a regular wave running along the stroke. */
+const val LINE_WAVY = 3
+
+/**
+ * A corrugated stroke of [width] points as a polyline (x0, y0, x1, y1, ...): the stroke's own smooth curve
+ * with a regular wave across it. The wave grows with the line width. Same points on screen and in the PDF.
+ */
+fun wavyPoints(pts: FloatArray, size: Int, poly: Boolean, width: Float): FloatArray {
+    val base = buildPath(pts, size, poly)
+    val pm = PathMeasure(base, false)
+    val len = pm.length
+    if (!(len > 0.5f)) return pts.copyOf(size)
+    val amp = maxOf(0.65f, width * 0.7f)           // height of the wave (points)
+    val waveLen = maxOf(5f, width * 5f)            // length of one wave
+    val step = maxOf(0.25f, waveLen / 16f)         // fine enough to look smooth
+    val n = minOf(20000, kotlin.math.ceil(len / step).toInt() + 1).coerceAtLeast(2)
+    val out = FloatArray(n * 2)
+    val pos = FloatArray(2)
+    val tan = FloatArray(2)
+    for (i in 0 until n) {
+        val s = len * i / (n - 1)
+        pm.getPosTan(s, pos, tan)
+        val off = amp * kotlin.math.sin(2.0 * Math.PI * s / waveLen).toFloat()
+        out[2 * i] = pos[0] - tan[1] * off       // across the stroke (its normal)
+        out[2 * i + 1] = pos[1] + tan[0] * off
+    }
+    return out
+}
+
+/** The path a stroke is drawn with: its smooth curve, or for corrugated strokes the wavy version of it. */
+fun strokePath(pts: FloatArray, size: Int, poly: Boolean, style: Int, width: Float): Path {
+    if (style != LINE_WAVY || size < 4) return buildPath(pts, size, poly)
+    val w = wavyPoints(pts, size, poly, width)
+    val p = Path()
+    p.moveTo(w[0], w[1])
+    var k = 2
+    while (k + 1 < w.size) {
+        p.lineTo(w[k], w[k + 1]); k += 2
+    }
+    return p
+}
 
 /** On/off pattern for a stroke style (null = solid). Dots are tiny dashes drawn with round caps. */
 fun linePattern(style: Int, width: Float): FloatArray? = when (style) {

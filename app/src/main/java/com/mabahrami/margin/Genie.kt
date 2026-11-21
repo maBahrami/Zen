@@ -38,9 +38,9 @@ class GenieLayout(context: Context) : FrameLayout(context) {
     fun open(source: RectF, child: View, onEnd: (() -> Unit)? = null) =
         run(source, child, 0f, 1f, 280L, onEnd)
 
-    /** Flows [child] back into [source], then calls [onEnd] (e.g. to dismiss the popup). */
+    /** Like minimising on macOS: flows [child] back into [source], then calls [onEnd] (e.g. to dismiss the popup). */
     fun close(source: RectF, child: View, onEnd: (() -> Unit)? = null) =
-        run(source, child, progress.coerceIn(0f, 1f).let { if (animating) it else 1f }, 0f, 120L, onEnd)
+        run(source, child, progress.coerceIn(0f, 1f).let { if (animating) it else 1f }, 0f, 210L, onEnd)
 
     private fun run(source: RectF, child: View, from: Float, to: Float, ms: Long, onEnd: (() -> Unit)?) {
         anim?.let { it.removeAllListeners(); it.cancel() }

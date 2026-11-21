@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Folder with a small star: a favourite folder -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M3,7.5 L3,17.5 A1.5,1.5 0 0 0 4.5,19 L19.5,19 A1.5,1.5 0 0 0 21,17.5 L21,9.5 A1.5,1.5 0 0 0 19.5,8 L12,8 L10,6 L4.5,6 A1.5,1.5 0 0 0 3,7.5 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,10.3 L12.9,12.3 L15,12.5 L13.4,13.9 L13.9,16 L12,14.9 L10.1,16 L10.6,13.9 L9,12.5 L11.1,12.3 Z" />
+</vector>

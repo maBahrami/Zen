@@ -1682,7 +1682,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                                 postDelayed(holdRunnable, holdMs)
                             }
                         }
-                        if (mode == MODE_INK) livePath = buildPath(livePts, liveSize, livePoly)
+                        if (mode == MODE_INK) livePath = strokePath(livePts, liveSize, livePoly, liveStyle, liveWidth)
                         invalidate()
                     }
                 }
@@ -1858,7 +1858,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             removeCallbacks(holdRunnable)
             lastMagnet = 0
         }
-        livePath = buildPath(livePts, liveSize, livePoly)
+        livePath = strokePath(livePts, liveSize, livePoly, liveStyle, liveWidth)
         return true
     }
 
@@ -1958,7 +1958,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         liveSize = r.pts.size
         livePoly = r.poly
         snapped = if (r.isLine) 1 else 2
-        livePath = buildPath(livePts, liveSize, livePoly)
+        livePath = strokePath(livePts, liveSize, livePoly, liveStyle, liveWidth)
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         invalidate()
     }

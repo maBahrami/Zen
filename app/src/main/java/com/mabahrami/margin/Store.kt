@@ -287,7 +287,7 @@ object Store {
             if (n < 2 || n % 2 != 0) continue
             val pts = FloatArray(n) { pa.optDouble(it, 0.0).toFloat() }
             val w = so.optDouble("w", 1.5).toFloat().coerceIn(0.1f, 60f)
-            val style = if (so.has("st")) so.optInt("st", LINE_SOLID).coerceIn(LINE_SOLID, LINE_DOTTED)
+            val style = if (so.has("st")) so.optInt("st", LINE_SOLID).coerceIn(LINE_SOLID, LINE_WAVY)
             else if (so.optBoolean("d", false)) LINE_DASHED else LINE_SOLID
             into.add(Stroke(so.optInt("c", Color.BLACK), w, pts, style, so.optBoolean("hl", false), so.optBoolean("pl", false)))
         }

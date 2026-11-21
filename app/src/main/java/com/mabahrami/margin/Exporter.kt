@@ -462,6 +462,18 @@ object Exporter {
             PDColor(floatArrayOf(Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f), PDDeviceRGB.INSTANCE)
         )
         cs.setLineWidth(s.width)
+        if (s.style == LINE_WAVY && n >= 2) {
+            // corrugated: the same wavy polyline as on screen, as vectors
+            val w = wavyPoints(p, p.size, s.poly, s.width)
+            cs.setLineDashPattern(FloatArray(0), 0f)
+            cs.moveTo(w[0], w[1])
+            var k = 2
+            while (k + 1 < w.size) {
+                cs.lineTo(w[k], w[k + 1]); k += 2
+            }
+            cs.stroke()
+            return
+        }
         cs.setLineDashPattern(linePattern(s.style, s.width) ?: FloatArray(0), 0f)
         cs.moveTo(p[0], p[1])
         when {
