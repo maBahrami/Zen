@@ -32,15 +32,17 @@ object Dark {
     private val inkCache = HashMap<Int, Int>()
 
     /**
-     * How an ink colour looks on dark paper: same hue and saturation, but dark colours become light
-     * (black turns white) and every colour is at least moderately light, so it stays readable.
+     * How an ink colour looks on dark paper: black (and near-black greys) turns white; every other
+     * colour stays exactly as it is in light view.
      */
     fun ink(c: Int): Int = synchronized(inkCache) {
         inkCache.getOrPut(c) {
             val hsl = FloatArray(3)
             ColorUtils.colorToHSL(c, hsl)
-            hsl[2] = maxOf(hsl[2], 1f - hsl[2], 0.62f)
-            (ColorUtils.HSLToColor(hsl) and 0x00FFFFFF) or (c and 0xFF000000.toInt())
+            if (hsl[2] < 0.25f && hsl[1] < 0.25f) {
+                hsl[2] = 1f - hsl[2]
+                (ColorUtils.HSLToColor(hsl) and 0x00FFFFFF) or (c and 0xFF000000.toInt())
+            } else c
         }
     }
 

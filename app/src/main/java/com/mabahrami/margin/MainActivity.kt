@@ -836,7 +836,8 @@ class MainActivity : ComponentActivity() {
         val r = dp(7).toFloat()
         for ((k, pair) in swatches.withIndex()) {
             val (c, v) = pair
-            val selected = c == pdfView.penColor && !pdfView.eraserMode
+            // with the eraser or the lasso, no colour is in use
+            val selected = c == pdfView.penColor && !pdfView.eraserMode && !pdfView.lassoMode
             // (highlights keep their own colours in dark view, so the highlighter palette doesn't change)
             val shown = if (dark && !hlMode) Dark.ink(c) else c
             val first = k == 0
@@ -981,13 +982,17 @@ class MainActivity : ComponentActivity() {
 
     /** Second tap on the pen: a small bubble with a solid and a dashed line to pick from. */
     private fun showPenStyleMenu() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        // line styles in a row
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = glass(14)
             elevation = dp(10).toFloat()
         }
-        val popup = GeniePop(box)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        card.addView(box)
+        val popup = GeniePop(card)
         fun choice(icon: Int, desc: String, style: Int) {
             val v = iconButton(icon, desc) {
                 pdfView.penStyle = style

@@ -324,6 +324,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     var penColor = Color.BLACK
     var penWidth = 1.5f
     var penStyle = LINE_SOLID
+    /** Pen smoothing against hand tremor, applied when a stroke is finished (always light; no setting). */
+    private val smoothing = SMOOTH_LIGHT
     /** Current tool is the highlighter (penColor/penWidth then hold the highlighter's). */
     var highlighter = false
     /** Straight-line highlighter: the stroke is always a straight line from start to the pen. */
@@ -355,9 +357,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private var selLastX = 0f
     private var selLastY = 0f
     private var selPointer = -1
+    /** The lasso loop and the selection box: thin dashes, black on light paper and light on dark paper. */
     private val lassoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF0A84FF.toInt()
+        color = Color.BLACK
     }
     private val selMatrix = android.graphics.Matrix()
     private val tmpRect = RectF()
@@ -1475,7 +1478,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (i < 0 || i >= tops.size) return
         canvas.save()
         canvas.translate(lefts[i] + mlOf(d, i), tops[i])
-        lassoPaint.strokeWidth = 1.5f * density / s
+        lassoPaint.strokeWidth = 1f * density / s
+        lassoPaint.color = if (d.dark) 0xFFE6E6E6.toInt() else Color.BLACK
         lassoPaint.pathEffect = DashPathEffect(floatArrayOf(6f * density / s, 4f * density / s), 0f)
         if (mode == MODE_LASSO && lassoSize >= 4) {
             lassoPath.reset()
@@ -2310,7 +2314,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 }
             }
             if (liveSize >= 2 && page != null && d.pages.contains(page)) {
-                val s = Stroke(liveColor, liveWidth, livePts.copyOf(liveSize), liveStyle, liveHighlighter, livePoly)
+                // freehand strokes: tremor smoothed out once finished (snapped lines and shapes are already clean);
+                // the tolerance is set on screen, so it's the same at every zoom
+                val pts = if (smoothing != SMOOTH_OFF && !livePoly && snapped == 0 && liveSize >= 6) {
+                    val tol = Smoothing.toleranceDp(smoothing) * resources.displayMetrics.density / d.scale
+                    try {
+                        Smoothing.smooth(livePts, liveSize, tol)
+                    } catch (t: Throwable) {
+                        livePts.copyOf(liveSize) // never lose a stroke to smoothing
+                    }
+                } else livePts.copyOf(liveSize)
+                val s = Stroke(liveColor, liveWidth, pts, liveStyle, liveHighlighter, livePoly)
                 page.strokes.add(s)
                 d.push(Action.Add(page, s))
                 onChange?.invoke(d)
