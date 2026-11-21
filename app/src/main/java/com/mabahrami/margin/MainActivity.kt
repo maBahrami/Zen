@@ -68,8 +68,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "Margin"
-        /** Front-buffered ink on/off (false = everything is drawn the normal way, as before). */
-        private const val FRONT_INK = true
         private val COLORS = intArrayOf(
             0xFF000000.toInt(), // black
             0xFF1E5BD8.toInt(), // blue
@@ -281,7 +279,7 @@ class MainActivity : ComponentActivity() {
         paneB = makePane()
         pdfView = paneA
         splitRatio = prefs.getFloat("split_ratio", 0.5f).coerceIn(0.2f, 0.8f)
-        setContentView(withFrontInk(buildUi()))
+        setContentView(buildUi())
         loadTool()
         // "focus" (on/off) is the setting from v1.0: on meant everything hidden
         val savedFocus = prefs.getInt("focus_level", if (prefs.getBoolean("focus", false)) 2 else 0)
@@ -407,7 +405,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        frontInk?.release()
         main.removeCallbacks(flushRunnable)
         val all = ArrayList(docs)
         paneA.release()
@@ -493,22 +490,6 @@ class MainActivity : ComponentActivity() {
     ).apply { marginStart = dp(startDp) }
 
     private fun divider(): View = View(this).apply { setBackgroundColor(SEPARATOR) }
-
-    /** Front-buffered ink layer over the whole window (see FrontInk); null if unavailable. */
-    private var frontInk: FrontInk? = null
-
-    /** Puts the front-buffered ink layer on top of [content] and gives it to both panes. */
-    private fun withFrontInk(content: View): View {
-        if (!FRONT_INK) return content
-        val fi = try { FrontInk(this) } catch (t: Throwable) { null } ?: return content
-        frontInk = fi
-        paneA.frontInk = fi
-        paneB.frontInk = fi
-        return FrameLayout(this).apply {
-            addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            addView(fi.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        }
-    }
 
     private fun buildUi(): View {
         val root = LinearLayout(this).apply {

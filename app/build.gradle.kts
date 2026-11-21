@@ -33,8 +33,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
-    // front-buffered (low-latency) ink
-    implementation("androidx.graphics:graphics-core:1.0.4")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // Pure-Java PDF library, used only for export (keeps the original page as vectors)
