@@ -2323,7 +2323,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     /**
-     * Asks the predictor where the pen is heading and keeps a short tail (at most ~12 dp on screen) to draw
+     * Asks the predictor where the pen is heading and keeps a short tail (at most ~24 dp on screen) to draw
      * ahead of the line. No tail if the guess turns back against the writing direction or anything fails.
      */
     private fun updateTail(d: Doc, e: MotionEvent) {
@@ -2343,7 +2343,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             var py = livePts[liveSize - 1]
             val dx0 = px - livePts[liveSize - 4]
             val dy0 = py - livePts[liveSize - 3]
-            val maxLen = 12f * density / d.scale
+            val maxLen = 24f * density / d.scale
             var len = 0f
             val n = pe.historySize + 1
             for (h in 0 until n) {

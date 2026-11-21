@@ -28,9 +28,9 @@ class PenPredictor(context: Context) {
         false
     }
 
-    /** Predicted pen event for now (positions in view pixels), or null. The caller must recycle it. */
-    fun predict(): MotionEvent? = try {
-        p.predict(System.nanoTime())
+    /** Predicted pen event [aheadMs] from now (positions in view pixels), or null. The caller must recycle it. */
+    fun predict(aheadMs: Long = 25): MotionEvent? = try {
+        p.predict(System.nanoTime() + aheadMs * 1_000_000L)
     } catch (t: Throwable) {
         null
     }
