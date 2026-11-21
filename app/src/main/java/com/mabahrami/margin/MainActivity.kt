@@ -161,6 +161,10 @@ class MainActivity : ComponentActivity() {
     private val flushRunnable = Runnable { flushSaves() }
     private var pendingSaveId: String? = null
     private var pendingExportId: String? = null
+    /** Pages to export (select mode), or null for the whole document. */
+    private var pendingExportPages: List<Page>? = null
+    /** The app was restarted while the picker was open for a page export: the choice is gone. */
+    private var pendingExportPagesLost = false
     private var pendingInsertId: String? = null
     private var pendingCameraPath: String? = null
 
@@ -246,7 +250,15 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
             val d = docs.firstOrNull { it.id == pendingExportId }
             pendingExportId = null
-            if (uri != null && d != null) writeDoc(d, uri, isSave = false, fromPicker = true)
+            val only = pendingExportPages
+            val lost = pendingExportPagesLost
+            pendingExportPages = null
+            pendingExportPagesLost = false
+            if (uri != null && d != null) {
+                // never export the whole document when only some pages were chosen
+                if (lost) toast("The page selection was lost · select the pages and export again")
+                else writeDoc(d, uri, isSave = false, fromPicker = true, only = only)
+            }
         }
 
     // ======================= lifecycle =======================
@@ -260,6 +272,7 @@ class MainActivity : ComponentActivity() {
         prefs = getSharedPreferences("settings", MODE_PRIVATE)
         pendingSaveId = savedInstanceState?.getString("pendingSave")
         pendingExportId = savedInstanceState?.getString("pendingExport")
+        pendingExportPagesLost = savedInstanceState?.getBoolean("pendingExportSel", false) == true
         pendingInsertId = savedInstanceState?.getString("pendingInsert")
         pendingCameraPath = savedInstanceState?.getString("pendingCamera")
         paneA = makePane()
@@ -362,6 +375,7 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
         outState.putString("pendingSave", pendingSaveId)
         outState.putString("pendingExport", pendingExportId)
+        outState.putBoolean("pendingExportSel", pendingExportPages != null || pendingExportPagesLost)
         outState.putString("pendingInsert", pendingInsertId)
         outState.putString("pendingCamera", pendingCameraPath)
     }
@@ -816,6 +830,9 @@ class MainActivity : ComponentActivity() {
         pagesPanel.onClose = { setPagesVisible(false) }
         pagesPanel.onPageMoved = { from, to, page -> pdfView.pageMoved(from, to, page) }
         pagesPanel.onAddPage = { addPageLikeLast() }
+        pagesPanel.onCopyPages = { ps -> withPages(ps) { d, idx -> copyPages(d, idx, cut = false) } }
+        pagesPanel.onCutPages = { ps -> withPages(ps) { d, idx -> copyPages(d, idx, cut = true) } }
+        pagesPanel.onExportPages = { ps -> active?.let { d -> startExport(d, ps.filter { d.pages.contains(it) }) } }
         body.addView(pagesPanel, LinearLayout.LayoutParams(dp(PagesPanel.WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT))
         pagesPanelDivider = divider().apply { visibility = View.GONE }
         body.addView(pagesPanelDivider, LinearLayout.LayoutParams(1, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -3021,6 +3038,13 @@ class MainActivity : ComponentActivity() {
         ))
     }
 
+    /** Runs [f] with the active tab and the indices of [ps] in it (pages no longer there are skipped). */
+    private fun withPages(ps: List<Page>, f: (Doc, List<Int>) -> Unit) {
+        val d = active ?: return
+        val idx = ps.map { d.pages.indexOf(it) }.filter { it >= 0 }
+        if (idx.isNotEmpty()) f(d, idx)
+    }
+
     private fun pasteLabel(): String {
         val n = PageClipboard.clip?.pages?.size ?: 1
         return if (n == 1) "Paste page after" else "Paste $n pages after"
@@ -3102,14 +3126,13 @@ class MainActivity : ComponentActivity() {
                 val n = result.pages.size
                 val what = if (n == 1) "Page" else "$n pages"
                 if (cut && !d.closed && active === d && pdfView.doc === d) {
-                    // delete from the end so earlier indices stay right
-                    for (p in pages.reversed()) {
-                        val at = d.pages.indexOf(p)
-                        if (at >= 0) pdfView.deletePage(at)
-                    }
+                    val deleted = pdfView.deletePages(pages)
+                    pagesPanel.endSelection()
                     pagesPanel.refresh()
-                    toast("$what cut · paste from a page's ⋮ menu (Undo brings it back)")
+                    toast(if (deleted) "$what cut · paste from a page's ⋮ menu (Undo brings it back)"
+                        else "$what copied, but couldn't be removed right now")
                 } else {
+                    pagesPanel.endSelection()
                     toast("$what copied · paste from a page's ⋮ menu")
                 }
             } catch (t: Throwable) {
@@ -3803,23 +3826,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startExport(d: Doc) {
+    private fun startExport(d: Doc, only: List<Page>? = null) {
         if (d.busy) {
             toast("Busy, try again in a moment")
             return
         }
+        if (only != null && only.isEmpty()) return
         pendingExportId = d.id
+        pendingExportPages = only
+        pendingExportPagesLost = false
         try {
-            exportLauncher.launch(baseName(d.name) + "_export.pdf")
+            exportLauncher.launch(baseName(d.name) + (if (only != null) "_pages.pdf" else "_export.pdf"))
         } catch (e: Exception) {
             pendingExportId = null
+            pendingExportPages = null
             toast("No app available to save files")
         }
     }
 
-    private fun writeDoc(d: Doc, uri: Uri, isSave: Boolean, fromPicker: Boolean, renameTo: String? = null) {
+    private fun writeDoc(d: Doc, uri: Uri, isSave: Boolean, fromPicker: Boolean, renameTo: String? = null, only: List<Page>? = null) {
         if (d.busy || d.closed) return
-        val job = Exporter.snapshot(d, withEditData = isSave)
+        val full = Exporter.snapshot(d, withEditData = isSave)
+        val job = if (only == null || isSave) full else {
+            // export just the chosen pages, in document order
+            val keep = only.toHashSet()
+            val pages = full.pages.filterIndexed { i, _ -> d.pages.getOrNull(i)?.let { it in keep } == true }
+            if (pages.isEmpty()) {
+                toast("Those pages are no longer in the document")
+                return
+            }
+            Exporter.Job(full.sources, full.marginL, full.marginR, pages, null, emptyList())
+        }
         val versionAtStart = d.version
         d.busy = true
         toast(if (isSave) "Saving…" else "Exporting…")
@@ -3855,6 +3892,7 @@ class MainActivity : ComponentActivity() {
                     updateButtons()
                     toast(if (renameFailed) "Saved, but this location doesn't allow renaming" else "Saved")
                 } else {
+                    if (only != null) pagesPanel.endSelection()
                     toast("Exported")
                 }
             } catch (t: Throwable) {

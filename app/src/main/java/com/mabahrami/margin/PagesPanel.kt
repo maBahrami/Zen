@@ -51,6 +51,19 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
     var onAddPage: (() -> Unit)? = null
     /** A page was dragged to a new place (the list is already reordered). */
     var onPageMoved: ((Int, Int, Page) -> Unit)? = null
+    /** Select mode: the chosen pages, in document order. */
+    var onCopyPages: ((List<Page>) -> Unit)? = null
+    var onCutPages: ((List<Page>) -> Unit)? = null
+    var onExportPages: ((List<Page>) -> Unit)? = null
+
+    // ---- select mode: tap pages to choose several, then act on them together ----
+    private var selecting = false
+    /** Chosen pages (by identity, so undo/insert/delete never confuse it). */
+    private val chosen = HashSet<Page>()
+    private lateinit var selectBtn: TextView
+    private lateinit var allBtn: TextView
+    private lateinit var actionBar: LinearLayout
+    private val actions = ArrayList<TextView>()
 
     private var doc: Doc? = null
     private var current = 0
@@ -86,6 +99,11 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
         top.addView(header, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        allBtn = textButton("All") { toggleAll() }
+        allBtn.visibility = View.GONE
+        top.addView(allBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+        selectBtn = textButton("Select") { if (selecting) endSelection() else startSelection() }
+        top.addView(selectBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
         top.addView(ImageView(context).apply {
             setImageResource(R.drawable.ic_close)
             imageTintList = ColorStateList.valueOf(0xFF8E8E93.toInt())
@@ -106,6 +124,76 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             itemAnimator = null
         }
         addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        actionBar = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(8), dp(8), dp(12))
+            setBackgroundColor(0xFF1C1C1E.toInt())
+            visibility = View.GONE
+        }
+        fun act(label: String, cb: () -> ((List<Page>) -> Unit)?) {
+            val b = textButton(label) {
+                val ps = chosenInOrder()
+                if (ps.isNotEmpty()) cb()?.invoke(ps)
+            }.apply { gravity = Gravity.CENTER }
+            actions.add(b)
+            actionBar.addView(b, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(2); marginEnd = dp(2) })
+        }
+        act("Copy") { onCopyPages }
+        act("Cut") { onCutPages }
+        act("Export PDF") { onExportPages }
+        addView(actionBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
+    private fun textButton(label: String, onClick: () -> Unit): TextView = TextView(context).apply {
+        text = label
+        textSize = 15f
+        setTextColor(ACCENT)
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(12), 0, dp(12), 0)
+        background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null,
+            GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.WHITE) })
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
+
+    /** Enters select mode (dragging to reorder is off while selecting). */
+    fun startSelection() {
+        if (doc == null) return
+        selecting = true
+        chosen.clear()
+        refresh()
+    }
+
+    /** Leaves select mode and forgets the choice. */
+    fun endSelection() {
+        if (!selecting && chosen.isEmpty()) return
+        selecting = false
+        chosen.clear()
+        refresh()
+    }
+
+    private fun toggleAll() {
+        val d = doc ?: return
+        if (chosen.size == d.pageCount) chosen.clear() else chosen.addAll(d.pages)
+        refresh()
+    }
+
+    private fun chosenInOrder(): List<Page> = doc?.pages?.filter { it in chosen } ?: emptyList()
+
+    private fun updateSelectionUi() {
+        selectBtn.text = if (selecting) "Done" else "Select"
+        allBtn.visibility = if (selecting) View.VISIBLE else View.GONE
+        val d = doc
+        allBtn.text = if (d != null && d.pageCount > 0 && chosen.size == d.pageCount) "None" else "All"
+        actionBar.visibility = if (selecting) View.VISIBLE else View.GONE
+        val any = chosen.isNotEmpty()
+        for (b in actions) {
+            b.isEnabled = any
+            b.alpha = if (any) 1f else 0.35f
+        }
     }
 
     // ---------------- hold a page and drag it to reorder ----------------
@@ -119,7 +207,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
                 ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT, 0,
             )
 
-        override fun isLongPressDragEnabled(): Boolean = true
+        override fun isLongPressDragEnabled(): Boolean = !selecting
         override fun isItemViewSwipeEnabled(): Boolean = false
 
         override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
@@ -172,6 +260,8 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
 
     fun setDoc(d: Doc?) {
         doc = d
+        selecting = false
+        chosen.clear()
         generation++
         cache.evictAll()
         pending.clear()
@@ -182,8 +272,12 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
     /** Re-binds visible thumbnails; only pages whose content changed are re-rendered. */
     @SuppressLint("NotifyDataSetChanged")
     fun refresh() {
+        // pages removed meanwhile (undo, delete, another tab) drop out of the choice
+        val d = doc
+        if (d == null) chosen.clear() else if (chosen.isNotEmpty()) chosen.retainAll(d.pages.toSet())
         adapter.notifyDataSetChanged()
         updateHeader()
+        updateSelectionUi()
     }
 
     fun setCurrent(i: Int) {
@@ -201,7 +295,11 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
 
     private fun updateHeader() {
         val n = doc?.pageCount ?: 0
-        header.text = if (n == 0) "" else "${current + 1} / $n"
+        header.text = when {
+            n == 0 -> ""
+            selecting -> if (chosen.isEmpty()) "Select pages" else "${chosen.size} selected"
+            else -> "${current + 1} / $n"
+        }
     }
 
     // ---------------- thumbnails ----------------
@@ -332,7 +430,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
 
     // ---------------- list ----------------
 
-    private inner class Holder(root: View, val frame: FrameLayout, val thumb: ImageView, val number: TextView, val more: ImageView) :
+    private inner class Holder(root: View, val frame: FrameLayout, val thumb: ImageView, val number: TextView, val more: ImageView, val check: TextView) :
         RecyclerView.ViewHolder(root) {
         var key: String? = null
     }
@@ -341,7 +439,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
 
     private inner class Adapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         /** Pages plus a trailing "+" tile. */
-        override fun getItemCount(): Int = doc?.let { it.pageCount + 1 } ?: 0
+        override fun getItemCount(): Int = doc?.let { it.pageCount + if (selecting) 0 else 1 } ?: 0
 
         override fun getItemViewType(position: Int): Int = if (position == (doc?.pageCount ?: 0)) 1 else 0
 
@@ -392,6 +490,17 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             frame.addView(more, FrameLayout.LayoutParams(dp(30), dp(30), Gravity.BOTTOM or Gravity.END).apply {
                 setMargins(0, 0, dp(6), dp(6))
             })
+            // select mode: a round tick in the top corner
+            val check = TextView(context).apply {
+                gravity = Gravity.CENTER
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                visibility = View.GONE
+            }
+            frame.addView(check, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.TOP or Gravity.END).apply {
+                setMargins(0, dp(6), dp(6), 0)
+            })
             root.addView(frame, LinearLayout.LayoutParams(thumbW, dp(100)))
             val number = TextView(context).apply {
                 textSize = 13f
@@ -400,7 +509,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
                 setPadding(0, dp(6), 0, dp(4))
             }
             root.addView(number, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            return Holder(root, frame, thumb, number, more)
+            return Holder(root, frame, thumb, number, more, check)
         }
 
         override fun onBindViewHolder(vh: RecyclerView.ViewHolder, position: Int) {
@@ -416,11 +525,22 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             }
             h.number.text = "${position + 1}"
             h.thumb.setBackgroundColor(if (d.dark) Dark.PAPER else Color.WHITE)
-            val selected = position == current
+            val isChosen = selecting && p in chosen
+            val selected = if (selecting) isChosen else position == current
             h.frame.foreground = GradientDrawable().apply {
-                setColor(Color.TRANSPARENT)
+                setColor(if (isChosen) 0x330A84FF else Color.TRANSPARENT)
                 cornerRadius = dp(3).toFloat()
                 if (selected) setStroke(dp(3), ACCENT) else setStroke(1, 0xFF3A3A3C.toInt())
+            }
+            h.more.visibility = if (selecting) View.GONE else View.VISIBLE
+            h.check.visibility = if (selecting) View.VISIBLE else View.GONE
+            h.check.text = if (isChosen) "\u2713" else ""
+            h.check.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                if (isChosen) setColor(ACCENT) else {
+                    setColor(0x66000000)
+                    setStroke(dp(2), Color.WHITE)
+                }
             }
             h.number.setTextColor(if (selected) ACCENT else 0xFFD1D1D6.toInt())
             val key = signature(d, p)
@@ -432,7 +552,14 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             }
             h.itemView.setOnClickListener {
                 val pos = h.bindingAdapterPosition
-                if (pos != RecyclerView.NO_POSITION) onPageTap?.invoke(pos)
+                if (pos == RecyclerView.NO_POSITION) return@setOnClickListener
+                if (selecting) {
+                    val page = doc?.pages?.getOrNull(pos) ?: return@setOnClickListener
+                    if (!chosen.remove(page)) chosen.add(page)
+                    adapter.notifyItemChanged(pos)
+                    updateHeader()
+                    updateSelectionUi()
+                } else onPageTap?.invoke(pos)
             }
             h.more.setOnClickListener {
                 val pos = h.bindingAdapterPosition

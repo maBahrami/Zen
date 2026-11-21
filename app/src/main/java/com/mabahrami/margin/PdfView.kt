@@ -1081,6 +1081,25 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return true
     }
 
+    /** Deletes several pages as one undo step. Returns false if that would leave no page. */
+    fun deletePages(pages: Collection<Page>): Boolean {
+        val d = doc ?: return false
+        if (penBusy) return false
+        val idx = pages.map { d.pages.indexOf(it) }.filter { it >= 0 }.distinct().sortedDescending()
+        if (idx.isEmpty() || idx.size >= d.pageCount) return false
+        val acts = ArrayList<Action>()
+        // from the end, so each recorded index is right when undo puts the pages back in reverse
+        for (i in idx) {
+            val page = d.pages.removeAt(i)
+            if (page === selPage) clearSelection()
+            acts.add(Action.DeletePage(i, page))
+        }
+        d.push(if (acts.size == 1) acts[0] else Action.Batch(acts))
+        afterLayoutChange(d)
+        onChange?.invoke(d)
+        return true
+    }
+
     /**
      * Places a new image on the page in the middle of the screen, centred on screen.
      * If [w]/[h] are > 0 they are used (paste), otherwise it gets 60 % of the page width.
