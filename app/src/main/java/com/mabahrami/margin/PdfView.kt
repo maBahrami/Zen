@@ -503,6 +503,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private val tail = FloatArray(16)
     private var tailSize = 0
     private val tailPath = Path()
+
+    // ---- front-buffered ink (set by the activity); this view still draws everything itself as well ----
+    var frontInk: FrontInk? = null
+    private var frontOn = false
+    private var frontLastX = 0f
+    private var frontLastY = 0f
+    private var frontOffX = 0f
+    private var frontOffY = 0f
+    private val frontClip = RectF()
+    private val frontLocA = IntArray(2)
+    private val frontLocB = IntArray(2)
     private var livePath: Path? = null
     private var liveColor = Color.BLACK
     private var liveWidth = 1.5f
@@ -1460,7 +1471,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 val ink = livePressureInk()
                 if (ink != null) Pressure.draw(canvas, ink, inkPaint, inkFill) else canvas.drawPath(lp!!, inkPaint)
                 // predicted tail: same colour, the width the line has right now
-                if (tailSize >= 2 && liveSize >= 2 && snapped == 0 && !livePoly && liveStyle == LINE_SOLID) {
+                if (!frontOn && tailSize >= 2 && liveSize >= 2 && snapped == 0 && !livePoly && liveStyle == LINE_SOLID) {
                     tailPath.rewind()
                     tailPath.moveTo(livePts[liveSize - 2], livePts[liveSize - 1])
                     var k = 0
@@ -2093,7 +2104,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                             }
                             curPressure = e.getPressure(idx)
                             penPoint(d, ex, ey)
-                            if (mode == MODE_INK) updateTail(d, e)
+                            if (mode == MODE_INK) {
+                                if (frontOn) frontInk?.flush()
+                                updateTail(d, e)
+                            }
                             if (mode == MODE_INK && hypot(ex - holdX, ey - holdY) > holdSlopPx) {
                                 // still moving: restart the hold timer from here
                                 holdX = ex; holdY = ey
@@ -2303,7 +2317,44 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             lastMagnet = 0
         }
         livePath = strokePath(livePts, liveSize, livePoly, liveStyle, liveWidth); liveInk = null
+        frontStart(x, y)
         return true
+    }
+
+    /** Starts drawing this stroke on the front-buffered layer too (solid pen only). */
+    private fun frontStart(x: Float, y: Float) {
+        frontOn = false
+        val fi = frontInk ?: return
+        if (liveHighlighter || liveStyle != LINE_SOLID || livePoly || snapped != 0) return
+        try {
+            getLocationInWindow(frontLocA)
+            fi.view.getLocationInWindow(frontLocB)
+            frontOffX = (frontLocA[0] - frontLocB[0]).toFloat()
+            frontOffY = (frontLocA[1] - frontLocB[1]).toFloat()
+            frontClip.set(frontOffX, frontOffY, frontOffX + width, frontOffY + height)
+            frontOn = fi.begin(if (darkView) Dark.ink(liveColor) else liveColor, frontClip)
+            if (frontOn) {
+                frontLastX = x
+                frontLastY = y
+                fi.add(x + frontOffX, y + frontOffY, x + frontOffX + 0.01f, y + frontOffY, frontWidth())
+                fi.flush()
+            }
+        } catch (t: Throwable) {
+            frontOn = false
+        }
+    }
+
+    /** Line width on screen for the front layer (with the pressure the line has right now). */
+    private fun frontWidth(): Float {
+        val d = doc ?: return liveWidth
+        val f = if (liveHasPressure && liveSize >= 2) liveFact[liveSize / 2 - 1] else 1f
+        return liveWidth * f * d.scale
+    }
+
+    private fun frontStop(keep: Boolean) {
+        if (!frontOn) return
+        frontOn = false
+        if (keep) frontInk?.end() else frontInk?.abandon()
     }
 
     /** True if [sm] (the smoothed stroke) starts and ends where [raw] does and isn't noticeably shorter. */
@@ -2410,6 +2461,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val p = if (curPressure.isFinite()) curPressure.coerceIn(0f, 1f) else liveEma
         liveEma = if (k == 0) p else liveEma + (p - liveEma) * Pressure.FOLLOW
         liveFact[k] = Pressure.factor(liveEma)
+        if (frontOn && k > 0) {
+            frontInk?.add(frontLastX + frontOffX, frontLastY + frontOffY, x + frontOffX, y + frontOffY, frontWidth())
+            frontLastX = x
+            frontLastY = y
+        }
     }
 
     private fun eraseAt(d: Doc, x: Float, y: Float) {
@@ -2502,6 +2558,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         mode = MODE_NONE
         invalidate()
+        frontStop(keep = true)
     }
 
     /** Pen held still: replace the rough stroke with the recognised shape. */
@@ -2514,6 +2571,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         liveSize = r.pts.size
         livePoly = r.poly
         snapped = if (r.isLine) 1 else 2
+        frontStop(keep = false)
         livePath = strokePath(livePts, liveSize, livePoly, liveStyle, liveWidth); liveInk = null
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         invalidate()
@@ -2550,6 +2608,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private fun cancelLive() {
         removeCallbacks(holdRunnable)
         tailSize = 0
+        frontStop(keep = false)
         snapped = 0
         livePoly = false
         liveSize = 0
