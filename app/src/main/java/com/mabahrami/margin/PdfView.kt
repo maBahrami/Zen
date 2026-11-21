@@ -491,6 +491,18 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     /** The live stroke comes from the S Pen, so its pressure is real. */
     private var liveHasPressure = false
     private val inkFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+
+    // ---- motion prediction: a short guessed tail drawn ahead of the live line; never stored ----
+    private val predictor: PenPredictor? =
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            try { PenPredictor(context) } catch (t: Throwable) { null }
+        } else null
+    /** Prediction works for the pen of the current stroke. */
+    private var predictOn = false
+    /** Predicted points (page-local), drawn on from the live line's last point. Cleared on lift. */
+    private val tail = FloatArray(16)
+    private var tailSize = 0
+    private val tailPath = Path()
     private var livePath: Path? = null
     private var liveColor = Color.BLACK
     private var liveWidth = 1.5f
@@ -1447,6 +1459,18 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 // with the S Pen the width follows the pressure as you write (the same shape it keeps when lifted)
                 val ink = livePressureInk()
                 if (ink != null) Pressure.draw(canvas, ink, inkPaint, inkFill) else canvas.drawPath(lp!!, inkPaint)
+                // predicted tail: same colour, the width the line has right now
+                if (tailSize >= 2 && liveSize >= 2 && snapped == 0 && !livePoly && liveStyle == LINE_SOLID) {
+                    tailPath.rewind()
+                    tailPath.moveTo(livePts[liveSize - 2], livePts[liveSize - 1])
+                    var k = 0
+                    while (k + 1 < tailSize) {
+                        tailPath.lineTo(tail[k], tail[k + 1]); k += 2
+                    }
+                    val f = if (ink != null) liveFact[liveSize / 2 - 1] else 1f
+                    inkPaint.strokeWidth = liveWidth * f
+                    canvas.drawPath(tailPath, inkPaint)
+                }
             }
             canvas.restore()
         }
@@ -2069,6 +2093,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                             }
                             curPressure = e.getPressure(idx)
                             penPoint(d, ex, ey)
+                            if (mode == MODE_INK) updateTail(d, e)
                             if (mode == MODE_INK && hypot(ex - holdX, ey - holdY) > holdSlopPx) {
                                 // still moving: restart the hold timer from here
                                 holdX = ex; holdY = ey
@@ -2235,6 +2260,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         } else {
             curPressure = e.getPressure(idx)
             liveHasPressure = e.getToolType(idx) == MotionEvent.TOOL_TYPE_STYLUS
+            tailSize = 0
+            predictOn = false
+            if (liveHasPressure) predictor?.let { pr ->
+                pr.record(e)
+                predictOn = pr.available(e)
+            }
             mode = if (startStroke(d, x, y)) MODE_INK else MODE_NONE
         }
     }
@@ -2289,6 +2320,61 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         while (k + 1 < sm.size) { sl += hypot(sm[k] - sm[k - 2], sm[k + 1] - sm[k - 1]); k += 2 }
         // smoothing only takes out jitter, which shortens a stroke a little; never by much
         return sl >= rl * 0.85f - e
+    }
+
+    /**
+     * Asks the predictor where the pen is heading and keeps a short tail (at most ~12 dp on screen) to draw
+     * ahead of the line. No tail if the guess turns back against the writing direction or anything fails.
+     */
+    private fun updateTail(d: Doc, e: MotionEvent) {
+        tailSize = 0
+        val pr = predictor ?: return
+        if (!predictOn) return
+        pr.record(e)
+        if (liveHighlighter || liveStyle != LINE_SOLID || livePoly || snapped != 0 || liveSize < 4) return
+        val i = livePageIndex
+        if (i < 0 || i >= d.pageCount) return
+        val pe = pr.predict() ?: return
+        try {
+            val pi = pe.findPointerIndex(penPointerId).let { if (it >= 0) it else 0 }
+            val ox = lefts[i] + mlOf(d, i)
+            val oy = tops[i]
+            var px = livePts[liveSize - 2]
+            var py = livePts[liveSize - 1]
+            val dx0 = px - livePts[liveSize - 4]
+            val dy0 = py - livePts[liveSize - 3]
+            val maxLen = 12f * density / d.scale
+            var len = 0f
+            val n = pe.historySize + 1
+            for (h in 0 until n) {
+                val sx = if (h < pe.historySize) pe.getHistoricalX(pi, h) else pe.getX(pi)
+                val sy = if (h < pe.historySize) pe.getHistoricalY(pi, h) else pe.getY(pi)
+                val qx = (sx - d.tx) / d.scale - ox
+                val qy = (sy - d.ty) / d.scale - oy
+                if (!qx.isFinite() || !qy.isFinite()) break
+                val vx = qx - px
+                val vy = qy - py
+                val sl = hypot(vx, vy)
+                if (sl < 1e-4f) continue
+                if (tailSize == 0 && dx0 * vx + dy0 * vy < 0f) break // heading back: no guess
+                if (len + sl >= maxLen) {
+                    val t = (maxLen - len) / sl
+                    tail[tailSize++] = px + vx * t
+                    tail[tailSize++] = py + vy * t
+                    break
+                }
+                tail[tailSize++] = qx
+                tail[tailSize++] = qy
+                len += sl
+                px = qx
+                py = qy
+                if (tailSize + 2 > tail.size) break
+            }
+        } catch (t: Throwable) {
+            tailSize = 0
+        } finally {
+            pe.recycle()
+        }
     }
 
     /** The live stroke with its pressure widths, or null when it's drawn evenly (highlighter, dashes, shapes, finger). */
@@ -2363,6 +2449,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     private fun finishPen(d: Doc) {
+        tailSize = 0 // the guess never outlives the pen on the screen
         if (mode == MODE_INK) {
             val page = livePage
             if (page != null && liveSize >= 2 && liveIsTap(d)) {
@@ -2462,6 +2549,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     private fun cancelLive() {
         removeCallbacks(holdRunnable)
+        tailSize = 0
         snapped = 0
         livePoly = false
         liveSize = 0
