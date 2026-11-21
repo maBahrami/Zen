@@ -101,4 +101,10 @@ object Pics {
     )
 
     var clip: Clip? = null
+
+    /** Last lasso selection copied (strokes + images), shared across tabs. */
+    var selClip: LassoClip? = null
+
+    /** Label put on Android's clipboard when a lasso selection is copied. */
+    const val SEL_LABEL = "Zen selection"
 }

@@ -51,6 +51,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         private const val MODE_NAV = 3
         private const val MODE_IMG_MOVE = 4
         private const val MODE_IMG_RESIZE = 5
+        private const val MODE_LASSO = 6
+        private const val MODE_SEL_MOVE = 7
+        private const val MODE_SEL_SCALE = 8
         /** Straight highlighter snaps to horizontal/vertical within this many degrees. */
         private const val MAGNET_DEG = 1.5
     }
@@ -74,6 +77,41 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     /** Straight-line highlighter: the stroke is always a straight line from start to the pen. */
     var hlStraight = false
     var eraserMode = false
+    /** Lasso tool: the pen draws a selection loop instead of ink. */
+    var lassoMode = false
+        set(v) {
+            field = v
+            if (!v) clearLasso()
+        }
+    /** Where the lasso selection is on screen (l, t, r, b), or null when nothing is selected. */
+    var onLassoRect: ((RectF?) -> Unit)? = null
+
+    // ---- lasso selection state (page-local coordinates) ----
+    private var lassoPage: Page? = null
+    private var lassoPts = FloatArray(256)
+    private var lassoSize = 0
+    private val lassoPath = Path()
+    private var selStrokes: List<Stroke> = emptyList()
+    private var selImages: List<ImageItem> = emptyList()
+    private val selBox = RectF()
+    private var selDx = 0f
+    private var selDy = 0f
+    private var selScale = 1f
+    private var selAx = 0f
+    private var selAy = 0f
+    private var selStartDist = 1f
+    private var selLastX = 0f
+    private var selLastY = 0f
+    private var selPointer = -1
+    private val lassoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0xFF0A84FF.toInt()
+    }
+    private val selMatrix = android.graphics.Matrix()
+    private val tmpRect = RectF()
+    private val screenRect = RectF()
+
+    val hasLasso: Boolean get() = lassoPage != null && (selStrokes.isNotEmpty() || selImages.isNotEmpty())
 
     var doc: Doc? = null
         private set
@@ -150,6 +188,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         style = Paint.Style.STROKE
         color = Color.WHITE
     }
+    private val emptyLogo = androidx.core.content.ContextCompat.getDrawable(context, R.drawable.ic_launcher_fg)
+        ?.mutate()?.apply { setTint(0xFF48484A.toInt()) }
+
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFF8A8A8A.toInt()
         textSize = 18f * density
@@ -270,12 +311,315 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         generation++
         doc = d
         clearSelection()
+        clearLasso()
         relayout()
         if (d != null && d.scale > 0f && width > 0) clamp(d)
         invalidate()
     }
 
     private val penBusy: Boolean get() = mode != MODE_NONE && mode != MODE_NAV
+
+    private val lassoDragging: Boolean get() = mode == MODE_SEL_MOVE || mode == MODE_SEL_SCALE
+
+    fun clearLasso() {
+        val had = lassoPage != null
+        lassoPage = null
+        selStrokes = emptyList()
+        selImages = emptyList()
+        lassoSize = 0
+        if (had) onLassoRect?.invoke(null)
+        invalidate()
+    }
+
+    /** Box around the selected strokes and images (page-local). */
+    private fun recomputeSelBox() {
+        var l = Float.MAX_VALUE
+        var t = Float.MAX_VALUE
+        var r = -Float.MAX_VALUE
+        var b = -Float.MAX_VALUE
+        for (st in selStrokes) {
+            val hw = st.width / 2f
+            l = min(l, st.minX - hw); t = min(t, st.minY - hw)
+            r = max(r, st.maxX + hw); b = max(b, st.maxY + hw)
+        }
+        for (im in selImages) {
+            l = min(l, im.x); t = min(t, im.y)
+            r = max(r, im.x + im.w); b = max(b, im.y + im.h)
+        }
+        selBox.set(l, t, r, b)
+    }
+
+    /** Ray-casting point-in-polygon test against the lasso loop. */
+    private fun insideLasso(x: Float, y: Float): Boolean {
+        var inside = false
+        val n = lassoSize / 2
+        var j = n - 1
+        for (i in 0 until n) {
+            val xi = lassoPts[2 * i]
+            val yi = lassoPts[2 * i + 1]
+            val xj = lassoPts[2 * j]
+            val yj = lassoPts[2 * j + 1]
+            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi + 1e-6f) + xi) inside = !inside
+            j = i
+        }
+        return inside
+    }
+
+    private fun addLassoPoint(d: Doc, sx: Float, sy: Float) {
+        val page = lassoPage ?: return
+        val i = d.pages.indexOf(page)
+        if (i < 0 || tops.size != d.pageCount) return
+        if (lassoSize + 2 > lassoPts.size) lassoPts = lassoPts.copyOf(lassoPts.size * 2)
+        lassoPts[lassoSize++] = localX(d, i, sx)
+        lassoPts[lassoSize++] = localY(d, i, sy)
+    }
+
+    private fun beginLasso(d: Doc, e: MotionEvent, idx: Int) {
+        clearLasso()
+        val x = e.getX(idx)
+        val y = e.getY(idx)
+        val i = pageAt(d, (x - d.tx) / d.scale, (y - d.ty) / d.scale)
+        if (i < 0) {
+            mode = MODE_NONE; return
+        }
+        penPointerId = e.getPointerId(idx)
+        requestUnbufferedDispatch(e)
+        parent?.requestDisallowInterceptTouchEvent(true)
+        lassoPage = d.pages[i]
+        lassoSize = 0
+        addLassoPoint(d, x, y)
+        mode = MODE_LASSO
+    }
+
+    /** Lasso closed: select strokes mostly inside the loop and images whose centre is inside. */
+    private fun finishLasso() {
+        val page = lassoPage
+        mode = MODE_NONE
+        if (page == null || lassoSize < 6) {
+            clearLasso(); return
+        }
+        val strokes = ArrayList<Stroke>()
+        for (st in page.strokes) {
+            val n = st.pts.size / 2
+            var inside = 0
+            for (k in 0 until n) if (insideLasso(st.pts[2 * k], st.pts[2 * k + 1])) inside++
+            if (n > 0 && inside * 2 >= n) strokes.add(st)
+        }
+        val images = page.images.filter { insideLasso(it.x + it.w / 2f, it.y + it.h / 2f) }
+        lassoSize = 0
+        if (strokes.isEmpty() && images.isEmpty()) {
+            clearLasso(); return
+        }
+        selStrokes = strokes
+        selImages = images
+        recomputeSelBox()
+        invalidate()
+    }
+
+    /** Pen or finger on the selection: drag inside to move, a corner to scale. */
+    private fun tryGrabLasso(d: Doc, e: MotionEvent, idx: Int): Boolean {
+        if (!hasLasso) return false
+        val page = lassoPage ?: return false
+        val i = d.pages.indexOf(page)
+        if (i < 0 || tops.size != d.pageCount) return false
+        val lx = localX(d, i, e.getX(idx))
+        val ly = localY(d, i, e.getY(idx))
+        val g = grabPx / d.scale
+        var corner = -1
+        for (k in 0..3) {
+            val hx = if (k == 0 || k == 2) selBox.left else selBox.right
+            val hy = if (k < 2) selBox.top else selBox.bottom
+            if (abs(lx - hx) < g && abs(ly - hy) < g) {
+                corner = k; break
+            }
+        }
+        val inside = lx >= selBox.left - g / 2 && lx <= selBox.right + g / 2 && ly >= selBox.top - g / 2 && ly <= selBox.bottom + g / 2
+        if (corner < 0 && !inside) return false
+        selDx = 0f; selDy = 0f; selScale = 1f
+        selPointer = e.getPointerId(idx)
+        selLastX = e.getX(idx); selLastY = e.getY(idx)
+        if (corner >= 0) {
+            selAx = if (corner == 0 || corner == 2) selBox.right else selBox.left
+            selAy = if (corner < 2) selBox.bottom else selBox.top
+            val cx = if (corner == 0 || corner == 2) selBox.left else selBox.right
+            val cy = if (corner < 2) selBox.top else selBox.bottom
+            selStartDist = max(1f, hypot(cx - selAx, cy - selAy))
+            mode = MODE_SEL_SCALE
+        } else {
+            selAx = selBox.left; selAy = selBox.top
+            mode = MODE_SEL_MOVE
+        }
+        parent?.requestDisallowInterceptTouchEvent(true)
+        return true
+    }
+
+    private fun dragLasso(d: Doc, e: MotionEvent) {
+        val idx = e.findPointerIndex(selPointer)
+        if (idx < 0) return
+        val x = e.getX(idx)
+        val y = e.getY(idx)
+        if (mode == MODE_SEL_MOVE) {
+            selDx += (x - selLastX) / d.scale
+            selDy += (y - selLastY) / d.scale
+        } else {
+            val i = d.pages.indexOf(lassoPage ?: return)
+            if (i < 0) return
+            val lx = localX(d, i, x)
+            val ly = localY(d, i, y)
+            selScale = (hypot(lx - selAx, ly - selAy) / selStartDist).coerceIn(0.1f, 10f)
+        }
+        selLastX = x; selLastY = y
+        invalidate()
+    }
+
+    /** Commits a move/scale as one undo step (strokes replaced by moved copies, images changed). */
+    private fun finishLassoDrag(d: Doc) {
+        val page = lassoPage
+        val moved = selDx != 0f || selDy != 0f || selScale != 1f
+        mode = MODE_NONE
+        if (page == null || !moved) {
+            invalidate(); return
+        }
+        val actions = ArrayList<Action>()
+        val newStrokes = ArrayList<Stroke>()
+        for (st in selStrokes) {
+            val n = st.transformed(selDx, selDy, selScale, selAx, selAy)
+            val k = page.strokes.indexOf(st)
+            if (k >= 0) {
+                page.strokes[k] = n
+                actions.add(Action.ReplaceStroke(page, st, n))
+                newStrokes.add(n)
+            }
+        }
+        for (im in selImages) {
+            val before = im.state()
+            im.x = selAx + (im.x - selAx) * selScale + selDx
+            im.y = selAy + (im.y - selAy) * selScale + selDy
+            im.w *= selScale
+            im.h *= selScale
+            actions.add(Action.ImageChange(im, before, im.state()))
+        }
+        selStrokes = newStrokes
+        selDx = 0f; selDy = 0f; selScale = 1f
+        recomputeSelBox()
+        if (actions.isNotEmpty()) {
+            d.push(Action.Batch(actions))
+            onChange?.invoke(d)
+        }
+        invalidate()
+    }
+
+    /** Deletes the selection (one undo step). */
+    fun lassoDelete() {
+        val d = doc ?: return
+        val page = lassoPage ?: return
+        if (penBusy) return
+        val actions = ArrayList<Action>()
+        val erased = ArrayList<EraseItem>()
+        for (k in page.strokes.indices.reversed()) {
+            val st = page.strokes[k]
+            if (selStrokes.any { it === st }) {
+                erased.add(EraseItem(page, k, st))
+                page.strokes.removeAt(k)
+            }
+        }
+        if (erased.isNotEmpty()) actions.add(Action.Erase(erased))
+        for (im in selImages) {
+            val k = page.images.indexOf(im)
+            if (k >= 0) {
+                page.images.removeAt(k)
+                actions.add(Action.RemoveImage(page, im, k))
+            }
+        }
+        clearLasso()
+        if (actions.isNotEmpty()) {
+            d.push(Action.Batch(actions))
+            onChange?.invoke(d)
+        }
+    }
+
+    /** New colour for the selected strokes (images stay as they are). */
+    fun lassoRecolor(c: Int) {
+        val d = doc ?: return
+        val page = lassoPage ?: return
+        if (penBusy) return
+        val actions = ArrayList<Action>()
+        val newStrokes = ArrayList<Stroke>()
+        for (st in selStrokes) {
+            val k = page.strokes.indexOf(st)
+            if (k < 0) continue
+            val n = st.recoloured(c)
+            page.strokes[k] = n
+            newStrokes.add(n)
+            actions.add(Action.ReplaceStroke(page, st, n))
+        }
+        selStrokes = newStrokes
+        if (actions.isNotEmpty()) {
+            d.push(Action.Batch(actions))
+            onChange?.invoke(d)
+        }
+        invalidate()
+    }
+
+    /** The selection as a clip, positions relative to its top-left. Image files are the tab's own. */
+    fun lassoCopy(): LassoClip? {
+        val d = doc ?: return null
+        if (!hasLasso) return null
+        val ox = selBox.left
+        val oy = selBox.top
+        val strokes = selStrokes.map { it.transformed(-ox, -oy, 1f, 0f, 0f) }
+        val images = selImages.map {
+            ClipImage(File(d.dir, it.file), it.imgW, it.imgH,
+                it.state().copy(x = it.x - ox, y = it.y - oy, locked = false))
+        }
+        return LassoClip(strokes, images, selBox.width(), selBox.height())
+    }
+
+    /**
+     * Pastes a clip centred at [at] (or the screen centre). [imageFiles] are the clip's images already
+     * copied into this tab's folder (relative names, same order). The pasted items become the selection.
+     */
+    fun lassoPaste(clip: LassoClip, imageFiles: List<String>, at: PlacePoint?) {
+        val d = doc ?: return
+        if (penBusy || d.pageCount == 0) return
+        val target = if (at != null && d.pages.contains(at.page)) at else null
+        val i = if (target != null) d.pages.indexOf(target.page) else currentPageIndex().coerceIn(0, d.pageCount - 1)
+        val page = d.pages[i]
+        val cx = target?.x ?: (page.w / 2f)
+        val cy = target?.y ?: if (d.scale > 0f && tops.size == d.pageCount) (height / 2f - d.ty) / d.scale - tops[i] else page.h / 2f
+        val ox = cx - clip.w / 2f
+        val oy = (cy - clip.h / 2f).coerceIn(0f, max(0f, page.h - clip.h))
+        val actions = ArrayList<Action>()
+        val strokes = ArrayList<Stroke>()
+        for (st in clip.strokes) {
+            val n = st.transformed(ox, oy, 1f, 0f, 0f)
+            page.strokes.add(n)
+            strokes.add(n)
+            actions.add(Action.Add(page, n))
+        }
+        val images = ArrayList<ImageItem>()
+        for ((k, ci) in clip.images.withIndex()) {
+            val rel = imageFiles.getOrNull(k) ?: continue
+            val im = ImageItem(rel, ci.imgW, ci.imgH)
+            im.set(ci.st.copy(x = ci.st.x + ox, y = ci.st.y + oy))
+            val idx = page.images.size
+            page.images.add(im)
+            images.add(im)
+            actions.add(Action.AddImage(page, im, idx))
+        }
+        if (actions.isEmpty()) return
+        d.push(Action.Batch(actions))
+        clearSelection()
+        lassoPage = page
+        selStrokes = strokes
+        selImages = images
+        recomputeSelBox()
+        onChange?.invoke(d)
+        invalidate()
+    }
+
+    private fun isSelected(st: Stroke) = selStrokes.any { it === st }
+    private fun isSelected(im: ImageItem) = selImages.any { it === im }
 
     val selectedImage: ImageItem? get() = selItem
 
@@ -463,6 +807,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     private fun afterAction(d: Doc, a: Action) {
+        clearLasso()
         val si = selItem
         if (a is Action.MoveImage && si === a.item) selPage = if (a.from.images.contains(si)) a.from else a.to
         val sp2 = selPage
@@ -580,7 +925,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         canvas.drawColor(0xFF121214.toInt())
         val d = doc
         if (d == null) {
-            canvas.drawText("Tap the pencil for a new note, or the folder to open a PDF", width / 2f, height / 2f, hintPaint)
+            // Nothing open: just the Zen ensō, softly, in the middle.
+            emptyLogo?.let { logo ->
+                val size = (min(width, height) * 0.84f).toInt().coerceAtMost((520 * resources.displayMetrics.density).toInt())
+                val l = (width - size) / 2
+                val t = (height - size) / 2
+                logo.setBounds(l, t, l + size, t + size)
+                logo.draw(canvas)
+            }
             return
         }
         if (tops.size != d.pageCount) relayout()
@@ -647,8 +999,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 val lines = ruleCache.getOrPut(key) { paperLines(page.paper, page.w.toFloat(), page.h.toFloat()) }
                 canvas.drawLines(lines, rulePaint)
             }
+            val hideSel = lassoDragging && page === lassoPage
             for (im in page.images) {
                 if (mode == MODE_IMG_MOVE && im === selItem) continue
+                if (hideSel && isSelected(im)) continue
                 drawImage(d, canvas, im)
             }
             // highlights first (one multiplied layer: text stays readable, overlaps don't darken), then ink
@@ -659,6 +1013,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 canvas.saveLayer(hlBounds, hlLayerPaint)
                 for (st in page.strokes) {
                     if (!st.highlighter) continue
+                    if (hideSel && isSelected(st)) continue
                     hlStyle(st.color, st.width)
                     canvas.drawPath(st.path, hlPaint)
                 }
@@ -670,6 +1025,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
             for (st in page.strokes) {
                 if (st.highlighter) continue
+                if (hideSel && isSelected(st)) continue
                 applyStyle(st.color, st.width, st.style)
                 canvas.drawPath(st.path, inkPaint)
             }
@@ -679,6 +1035,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
             canvas.restore()
         }
+        drawLasso(d, canvas, s)
         // selected image frame (and the image itself while dragging) on top of everything, unclipped,
         // so it can be carried across page boundaries
         val sel = selItem
@@ -702,6 +1059,69 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             lastReportedPage = cur
             onCurrentPage?.invoke(cur)
         }
+    }
+
+    /** Lasso loop while drawing; dashed box + handles (and the moving content) once selected. */
+    private fun drawLasso(d: Doc, canvas: Canvas, s: Float) {
+        val page = lassoPage ?: run { onLassoRectIfChanged(null); return }
+        val i = d.pages.indexOf(page)
+        if (i < 0 || i >= tops.size) return
+        canvas.save()
+        canvas.translate(lefts[i] + mlOf(d, i), tops[i])
+        lassoPaint.strokeWidth = 1.5f * density / s
+        lassoPaint.pathEffect = DashPathEffect(floatArrayOf(6f * density / s, 4f * density / s), 0f)
+        if (mode == MODE_LASSO && lassoSize >= 4) {
+            lassoPath.reset()
+            lassoPath.moveTo(lassoPts[0], lassoPts[1])
+            var k = 2
+            while (k + 1 < lassoSize) {
+                lassoPath.lineTo(lassoPts[k], lassoPts[k + 1]); k += 2
+            }
+            canvas.drawPath(lassoPath, lassoPaint)
+        }
+        if (hasLasso) {
+            selMatrix.reset()
+            selMatrix.postScale(selScale, selScale, selAx, selAy)
+            selMatrix.postTranslate(selDx, selDy)
+            if (lassoDragging) {
+                // the selection moves as one piece while dragging
+                canvas.save()
+                canvas.concat(selMatrix)
+                for (im in selImages) drawImage(d, canvas, im)
+                for (st in selStrokes) {
+                    if (st.highlighter) {
+                        hlStyle(st.color, st.width); hlPaint.blendMode = android.graphics.BlendMode.MULTIPLY
+                        hlPaint.alpha = (HIGHLIGHT_ALPHA * 255).toInt()
+                        canvas.drawPath(st.path, hlPaint)
+                        hlPaint.blendMode = null; hlPaint.alpha = 255
+                    } else {
+                        applyStyle(st.color, st.width, st.style)
+                        canvas.drawPath(st.path, inkPaint)
+                    }
+                }
+                canvas.restore()
+            }
+            tmpRect.set(selBox)
+            selMatrix.mapRect(tmpRect)
+            canvas.drawRect(tmpRect, lassoPaint)
+            val r = handlePx / s
+            handleRing.strokeWidth = 2f * density / s
+            for (k in 0..3) {
+                val hx = if (k == 0 || k == 2) tmpRect.left else tmpRect.right
+                val hy = if (k < 2) tmpRect.top else tmpRect.bottom
+                canvas.drawCircle(hx, hy, r, handlePaint)
+                canvas.drawCircle(hx, hy, r, handleRing)
+            }
+            val ox = d.tx + (lefts[i] + mlOf(d, i)) * s
+            val oy = d.ty + tops[i] * s
+            screenRect.set(ox + tmpRect.left * s, oy + tmpRect.top * s, ox + tmpRect.right * s, oy + tmpRect.bottom * s)
+            onLassoRectIfChanged(screenRect)
+        } else onLassoRectIfChanged(null)
+        canvas.restore()
+    }
+
+    private fun onLassoRectIfChanged(r: RectF?) {
+        onLassoRect?.invoke(r)
     }
 
     private fun drawImage(d: Doc, canvas: Canvas, im: ImageItem) {
@@ -989,6 +1409,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     private fun onTap(d: Doc, x: Float, y: Float) {
+        if (hasLasso) {
+            clearLasso(); return
+        }
         val hit = imageAt(d, x, y)
         if (hit != null && !hit.second.locked) select(hit.first, hit.second) else clearSelection()
     }
@@ -1006,10 +1429,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 movedPastSlop = false
                 downX = e.x; downY = e.y
                 downTime = SystemClock.uptimeMillis()
-                if (tryGrabSelection(d, e, 0)) {
+                if (tryGrabLasso(d, e, 0)) {
+                    // moving / scaling the lasso selection
+                } else if (lassoMode && isPen(e, 0)) {
+                    beginLasso(d, e, 0)
+                } else if (tryGrabSelection(d, e, 0)) {
                     // moving / resizing the selected image
                 } else if (isPen(e, 0)) {
                     if (selItem != null) clearSelection()
+                    if (hasLasso) clearLasso()
                     beginPen(d, e, 0)
                 } else {
                     mode = MODE_NAV
@@ -1072,6 +1500,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
                 MODE_IMG_MOVE, MODE_IMG_RESIZE -> dragSelection(d, e)
 
+                MODE_LASSO -> {
+                    val idx = e.findPointerIndex(penPointerId)
+                    if (idx >= 0) {
+                        for (h in 0 until e.historySize) addLassoPoint(d, e.getHistoricalX(idx, h), e.getHistoricalY(idx, h))
+                        addLassoPoint(d, e.getX(idx), e.getY(idx))
+                        invalidate()
+                    }
+                }
+
+                MODE_SEL_MOVE, MODE_SEL_SCALE -> dragLasso(d, e)
+
                 MODE_NAV -> {
                     if (!movedPastSlop && hypot(e.x - downX, e.y - downY) > touchSlop) {
                         movedPastSlop = true
@@ -1101,6 +1540,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     finishPen(d)
                 } else if ((mode == MODE_IMG_MOVE || mode == MODE_IMG_RESIZE) && e.getPointerId(idx) == dragPointerId) {
                     finishDrag(d)
+                } else if (mode == MODE_LASSO && e.getPointerId(idx) == penPointerId) {
+                    finishLasso()
+                } else if (lassoDragging && e.getPointerId(idx) == selPointer) {
+                    finishLassoDrag(d)
                 }
             }
 
@@ -1109,6 +1552,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 when (mode) {
                     MODE_INK, MODE_ERASE -> finishPen(d)
                     MODE_IMG_MOVE, MODE_IMG_RESIZE -> finishDrag(d)
+                    MODE_LASSO -> finishLasso()
+                    MODE_SEL_MOVE, MODE_SEL_SCALE -> finishLassoDrag(d)
                     MODE_NAV -> {
                         scaleDetector.onTouchEvent(e)
                         val vt = velocity
@@ -1139,6 +1584,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     MODE_INK -> cancelLive()
                     MODE_ERASE -> finishPen(d)
                     MODE_IMG_MOVE, MODE_IMG_RESIZE -> finishDrag(d)
+                    MODE_LASSO -> clearLasso()
+                    MODE_SEL_MOVE, MODE_SEL_SCALE -> finishLassoDrag(d)
                     MODE_NAV -> {
                         velocity?.recycle(); velocity = null
                         interacting = false

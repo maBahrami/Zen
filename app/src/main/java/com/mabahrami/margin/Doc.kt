@@ -228,6 +228,24 @@ class Page(val file: Int, val src: Int, val w: Int, val h: Int, val paper: Int =
 
 class EraseItem(val page: Page, val index: Int, val stroke: Stroke)
 
+/** Copied lasso selection. Stroke points and image positions are relative to the selection's top-left. */
+class LassoClip(val strokes: List<Stroke>, val images: List<ClipImage>, val w: Float, val h: Float)
+class ClipImage(val file: File, val imgW: Int, val imgH: Int, val st: ImgState)
+
+/** A stroke moved by (dx, dy) and/or scaled by [s] around (ax, ay). */
+fun Stroke.transformed(dx: Float, dy: Float, s: Float, ax: Float, ay: Float): Stroke {
+    val p = FloatArray(pts.size)
+    var i = 0
+    while (i + 1 < pts.size) {
+        p[i] = ax + (pts[i] - ax) * s + dx
+        p[i + 1] = ay + (pts[i + 1] - ay) * s + dy
+        i += 2
+    }
+    return Stroke(color, width * s, p, style, highlighter, poly)
+}
+
+fun Stroke.recoloured(c: Int): Stroke = Stroke(c, width, pts, style, highlighter, poly)
+
 /** A page's own margins, remembered so "all pages" can be undone. */
 class PageOverride(val page: Page, val l: Float?, val r: Float?, val paper: Int?)
 
@@ -254,6 +272,10 @@ sealed class Action {
     class AddImage(val page: Page, val item: ImageItem, val index: Int) : Action()
     class RemoveImage(val page: Page, val item: ImageItem, val index: Int) : Action()
     class ImageChange(val item: ImageItem, val before: ImgState, val after: ImgState) : Action()
+    /** A stroke swapped for a changed copy (moved, scaled, recoloured). */
+    class ReplaceStroke(val page: Page, val old: Stroke, val new: Stroke) : Action()
+    /** Several actions undone/redone as one step. */
+    class Batch(val actions: List<Action>) : Action()
     /** Page dragged to a new position in the page overview. */
     class MovePage(val from: Int, val to: Int, val page: Page) : Action()
     /** Image dragged from one page to another. */
@@ -374,6 +396,11 @@ class Doc(
                 pages.remove(a.page)
                 pages.add(a.to.coerceIn(0, pages.size), a.page)
             }
+            is Action.ReplaceStroke -> {
+                val i = a.page.strokes.indexOf(a.old)
+                if (i >= 0) a.page.strokes[i] = a.new
+            }
+            is Action.Batch -> for (x in a.actions) forward(x)
         }
     }
 
@@ -408,6 +435,11 @@ class Doc(
                 pages.remove(a.page)
                 pages.add(a.from.coerceIn(0, pages.size), a.page)
             }
+            is Action.ReplaceStroke -> {
+                val i = a.page.strokes.indexOf(a.new)
+                if (i >= 0) a.page.strokes[i] = a.old
+            }
+            is Action.Batch -> for (k in a.actions.indices.reversed()) revert(a.actions[k])
         }
     }
 

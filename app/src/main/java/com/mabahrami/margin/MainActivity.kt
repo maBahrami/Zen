@@ -97,6 +97,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var penBtn: ImageView
     private lateinit var eraserBtn: ImageView
     private lateinit var hlBtn: ImageView
+    private lateinit var lassoBtn: ImageView
+    private lateinit var lassoBar: LinearLayout
     /** Current tool is the highlighter (pen and highlighter each remember their own colour and width). */
     private var hlMode = false
     private lateinit var undoBtn: ImageView
@@ -209,6 +211,13 @@ class MainActivity : ComponentActivity() {
         pdfView.onSelection = { item -> updateSelBar(item) }
         pdfView.onLongPressPage = { x, y, pt -> showPageMenu(x, y, pt) }
         pdfView.onSelectionRect = { l, t, r, b -> placeSelBar(l, t, r, b) }
+        pdfView.onLassoRect = { r ->
+            if (r == null) lassoBar.visibility = View.GONE
+            else {
+                lassoBar.visibility = View.VISIBLE
+                placeBar(lassoBar, r.left, r.top, r.right, r.bottom)
+            }
+        }
         pdfView.onCurrentPage = { i ->
             if (pagesPanel.visibility == View.VISIBLE) pagesPanel.setCurrent(i)
             updatePageBadge(i)
@@ -374,9 +383,6 @@ class MainActivity : ComponentActivity() {
             setFadingEdgeLength(dp(28))
             addView(tabBar)
         }
-        titleBar.addView(tabScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-            marginStart = dp(6); marginEnd = dp(4)
-        })
         // count of open tabs; tap for a list with full names
         tabCount = TextView(this).apply {
             textSize = 12f
@@ -392,9 +398,16 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
             setOnClickListener { v -> showTabList(v) }
         }
+        // tab counter sits left of the tabs
         titleBar.addView(tabCount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24)).apply {
-            marginEnd = dp(6)
+            marginStart = dp(6)
         })
+        titleBar.addView(tabScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(6); marginEnd = dp(4)
+        })
+        // very dim divider between the tabs and the tools on the right
+        titleBar.addView(View(this).apply { setBackgroundColor(0x26FFFFFF) },
+            LinearLayout.LayoutParams(1, dp(18)).apply { marginStart = dp(2); marginEnd = dp(8) })
         insertBtn = barIcon(R.drawable.ic_plus, "Insert") { showInsertMenu(insertBtn) }
         pagesBtn = barIcon(R.drawable.ic_pages, "Pages") { togglePages() }
         // page tools
@@ -432,15 +445,18 @@ class MainActivity : ComponentActivity() {
         val fMargins = iconButton(R.drawable.ic_margins, "Margins") { showMargins() }
 
         penBtn = iconButton(R.drawable.ic_pen, "Pen (tap again for line style)") {
-            if (pdfView.eraserMode || hlMode) setTool(false) else showPenStyleMenu()
+            // first tap selects the pen (leaving eraser / lasso / highlighter); a second tap opens line styles
+            if (pdfView.eraserMode || pdfView.lassoMode || hlMode) setTool(false) else showPenStyleMenu()
         }
         hlBtn = iconButton(R.drawable.ic_highlighter, "Highlighter (tap again for straight / free)") {
-            if (hlMode && !pdfView.eraserMode) showHighlighterMenu() else setTool(true)
+            if (hlMode && !pdfView.eraserMode && !pdfView.lassoMode) showHighlighterMenu() else setTool(true)
         }
         eraserBtn = iconButton(R.drawable.ic_eraser, "Eraser (or hold the S Pen button)") { setEraser(true) }
         palette.addView(penBtn, palLp())
         palette.addView(hlBtn, palLp(1))
         palette.addView(eraserBtn, palLp(1))
+        lassoBtn = iconButton(R.drawable.ic_lasso, "Select (lasso)") { setLasso(!pdfView.lassoMode) }
+        palette.addView(lassoBtn, palLp(1))
         palette.addView(divider(), palDivider())
         // colours: one continuous strip of rectangles, rounded at the ends
         val strip = LinearLayout(this).apply {
@@ -556,6 +572,26 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.END,
         ).apply { setMargins(0, 0, dp(14), dp(14)) })
+        // bar for the lasso selection
+        lassoBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = glass(12)
+            elevation = dp(10).toFloat()
+            clipToOutline = true
+            visibility = View.GONE
+        }
+        lassoBar.addView(menuItem("Copy") { copyLasso(cut = false) })
+        lassoBar.addView(sep(), LinearLayout.LayoutParams(1, dp(22)))
+        lassoBar.addView(menuItem("Cut") { copyLasso(cut = true) })
+        lassoBar.addView(sep(), LinearLayout.LayoutParams(1, dp(22)))
+        lassoBar.addView(menuItem("Color") { showRecolor() })
+        lassoBar.addView(sep(), LinearLayout.LayoutParams(1, dp(22)))
+        lassoBar.addView(menuItem("Delete", 0xFFFF453A.toInt()) { pdfView.lassoDelete() })
+        stage.addView(lassoBar, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START,
+        ))
         stage.addView(selBar, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.START,
@@ -590,9 +626,11 @@ class MainActivity : ComponentActivity() {
             LINE_DOTTED -> R.drawable.ic_pen_dotted
             else -> R.drawable.ic_pen
         })
-        setToolSelected(penBtn, !pdfView.eraserMode && !hlMode)
+        val drawing = !pdfView.eraserMode && !pdfView.lassoMode
+        setToolSelected(penBtn, drawing && !hlMode)
+        setToolSelected(lassoBtn, pdfView.lassoMode)
         hlBtn.setImageResource(if (pdfView.hlStraight) R.drawable.ic_highlighter_straight else R.drawable.ic_highlighter)
-        setToolSelected(hlBtn, !pdfView.eraserMode && hlMode)
+        setToolSelected(hlBtn, drawing && hlMode)
         setToolSelected(eraserBtn, pdfView.eraserMode)
         for ((c, v) in swatches) {
             val selected = c == pdfView.penColor && !pdfView.eraserMode
@@ -618,6 +656,7 @@ class MainActivity : ComponentActivity() {
         prefs.edit().putBoolean("tool_hl", highlighter).apply()
         pdfView.highlighter = highlighter
         pdfView.eraserMode = false
+        pdfView.lassoMode = false
         val unit = widthUnit()
         pdfView.penColor = prefs.getInt(colorKey(), if (highlighter) YELLOW else COLORS[0])
         pdfView.penWidth = prefs.getFloat(widthKey(), if (highlighter) 12f else 1.5f).coerceIn(unit, unit * 40)
@@ -711,10 +750,115 @@ class MainActivity : ComponentActivity() {
 
     private fun setEraser(on: Boolean) {
         pdfView.eraserMode = on
+        if (on) pdfView.lassoMode = false
         refreshTool()
     }
 
+    /** Lasso tool: draw a loop with the pen to select strokes and images. */
+    private fun setLasso(on: Boolean) {
+        pdfView.lassoMode = on
+        if (on) pdfView.eraserMode = false
+        refreshTool()
+    }
+
+    /** "Color" on the lasso bar: pick a colour for the selected strokes. */
+    private fun showRecolor() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = glass(14)
+            elevation = dp(10).toFloat()
+        }
+        val popup = android.widget.PopupWindow(box, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
+        popup.elevation = dp(10).toFloat()
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(Color.TRANSPARENT, 7)
+            clipToOutline = true
+        }
+        for (c in COLORS) {
+            strip.addView(View(this).apply {
+                setBackgroundColor(c)
+                isClickable = true
+                setOnClickListener {
+                    pdfView.lassoRecolor(c)
+                    popup.dismiss()
+                }
+            }, LinearLayout.LayoutParams(dp(30), dp(30)))
+        }
+        box.addView(strip)
+        popup.showAsDropDown(lassoBar, 0, dp(6))
+    }
+
+    /** Copies (or cuts) the lasso selection, images included, to Zen's clipboard. */
+    private fun copyLasso(cut: Boolean) {
+        val clip = pdfView.lassoCopy() ?: return
+        lifecycleScope.launch {
+            try {
+                val copied = withContext(Dispatchers.IO) {
+                    val dir = File(cacheDir, "selclip")
+                    dir.deleteRecursively()
+                    dir.mkdirs()
+                    clip.images.map { ci ->
+                        val f = File(dir, "${UUID.randomUUID()}.jpg")
+                        ci.file.copyTo(f, overwrite = true)
+                        ClipImage(f, ci.imgW, ci.imgH, ci.st)
+                    }
+                }
+                Pics.selClip = LassoClip(clip.strokes, copied, clip.w, clip.h)
+                try {
+                    getSystemService(ClipboardManager::class.java)
+                        ?.setPrimaryClip(ClipData.newPlainText(Pics.SEL_LABEL, Pics.SEL_LABEL))
+                } catch (e: Exception) {
+                    Log.w(TAG, "clipboard", e)
+                }
+                if (cut) pdfView.lassoDelete()
+                toast(if (cut) "Cut. Hold on a page to paste." else "Copied. Hold on a page to paste.")
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                toast("Copy failed: ${t.message}")
+            }
+        }
+    }
+
+    /** True when the newest thing on Android's clipboard is a Zen lasso selection. */
+    private fun clipboardHasSelection(): Boolean = try {
+        Pics.selClip != null &&
+            getSystemService(ClipboardManager::class.java)?.primaryClipDescription?.label?.toString() == Pics.SEL_LABEL
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun pasteLasso(d: Doc) {
+        val clip = Pics.selClip ?: return
+        val place = pendingPlace
+        pendingPlace = null
+        lifecycleScope.launch {
+            try {
+                val rels = withContext(Dispatchers.IO) {
+                    clip.images.map { ci ->
+                        val rel = "images/${UUID.randomUUID()}.jpg"
+                        val target = File(d.dir, rel)
+                        target.parentFile?.mkdirs()
+                        ci.file.copyTo(target, overwrite = true)
+                        rel
+                    }
+                }
+                if (d.closed) return@launch
+                if (active !== d) activate(d)
+                pdfView.lassoPaste(clip, rels, place)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                toast("Paste failed: ${t.message}")
+            }
+        }
+    }
+
     private fun setColor(c: Int) {
+        if (pdfView.hasLasso) {
+            pdfView.lassoRecolor(c)
+            return
+        }
         pdfView.penColor = c
         pdfView.eraserMode = false
         prefs.edit().putInt(colorKey(), c).apply()
@@ -896,20 +1040,107 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Full list of open tabs (with their whole names); tap one to switch. */
+    /** Full list of open tabs: the current one is highlighted, tap to switch, swipe left or right to close. */
     private fun showTabList(anchor: View) {
-        val pm = PopupMenu(this, anchor)
-        for ((k, d) in docs.withIndex()) {
-            val title = (if (d.unsaved) "● " else "") + baseName(d.name)
-            pm.menu.add(1, k, k, title).setCheckable(true).setChecked(d === active)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = glass(14)
+            elevation = dp(10).toFloat()
         }
-        pm.menu.setGroupCheckable(1, true, true)
-        docs.indexOf(active).takeIf { it >= 0 }?.let { pm.menu.findItem(it)?.setChecked(true) }
-        pm.setOnMenuItemClickListener { item ->
-            docs.getOrNull(item.itemId)?.let { activate(it) }
-            true
+        val popup = android.widget.PopupWindow(box, dp(300), ViewGroup.LayoutParams.WRAP_CONTENT, true)
+        popup.elevation = dp(10).toFloat()
+        box.addView(TextView(this).apply {
+            text = "Swipe a file left or right to close it"
+            textSize = 11f
+            setTextColor(TEXT_DIM)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, dp(6))
+        })
+        val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        for (d in docs) {
+            val isActive = d === active
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), 0, dp(12), 0)
+                background = RippleDrawable(ColorStateList.valueOf(0x22FFFFFF),
+                    if (isActive) rounded(0x330A84FF, 9) else null, rounded(Color.WHITE, 9))
+                isClickable = true
+            }
+            if (d.unsaved) {
+                row.addView(View(this).apply { background = oval(if (isActive) ACCENT else TEXT_DIM) },
+                    LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(8) })
+            }
+            row.addView(TextView(this).apply {
+                text = baseName(d.name)
+                textSize = 14f
+                setTextColor(if (isActive) ACCENT else TEXT)
+                typeface = Typeface.create(if (isActive) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.MIDDLE
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+            // Swipe horizontally to close; a plain tap switches to the file.
+            var downX = 0f
+            var downY = 0f
+            var swiping = false
+            row.setOnTouchListener { v, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = e.rawX; downY = e.rawY; swiping = false
+                        v.animate().cancel()
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = e.rawX - downX
+                        if (!swiping && Math.abs(dx) > slop && Math.abs(dx) > Math.abs(e.rawY - downY)) {
+                            swiping = true
+                            v.isPressed = false
+                            v.parent.requestDisallowInterceptTouchEvent(true)
+                            v.cancelLongPress()
+                        }
+                        if (swiping) {
+                            v.translationX = dx
+                            v.alpha = (1f - Math.abs(dx) / v.width).coerceIn(0.15f, 1f)
+                        }
+                        swiping
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (!swiping) {
+                            if (e.actionMasked == MotionEvent.ACTION_UP) {
+                                popup.dismiss()
+                                activate(d)
+                            }
+                            v.isPressed = false
+                            return@setOnTouchListener true
+                        }
+                        val dx = v.translationX
+                        if (e.actionMasked == MotionEvent.ACTION_UP && Math.abs(dx) > v.width * 0.35f) {
+                            val dir = if (dx > 0) 1f else -1f
+                            v.animate().translationX(dir * v.width).alpha(0f).setDuration(140).withEndAction {
+                                val needsAsk = d.busy || d.unsaved
+                                if (needsAsk || d === active || docs.size <= 1) {
+                                    popup.dismiss()
+                                    confirmClose(d)
+                                } else {
+                                    closeDoc(d)
+                                    box.removeView(v)
+                                }
+                            }.start()
+                        } else {
+                            v.animate().translationX(0f).alpha(1f).setDuration(160).start()
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
+            box.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                bottomMargin = dp(2)
+            })
         }
-        pm.show()
+        popup.showAsDropDown(anchor, 0, dp(6))
     }
 
     // ---------------- tab reordering ----------------
@@ -1014,7 +1245,8 @@ class MainActivity : ComponentActivity() {
             toast("Wait until saving finishes")
             return
         }
-        if (!(d.unsaved && d.hasContent)) {
+        // Any unsaved change (the dot next to the name) means: always ask first.
+        if (!d.unsaved) {
             closeDoc(d)
             return
         }
@@ -1029,6 +1261,8 @@ class MainActivity : ComponentActivity() {
             .setNeutralButton("Close anyway") { _, _ -> closeDoc(d) }
             .setNegativeButton("Cancel", null)
             .show()
+            .let { compact(it, 360) }
+            .getButton(AlertDialog.BUTTON_NEUTRAL)?.setTextColor(0xFFFF453A.toInt())
     }
 
     private fun closeDoc(d: Doc) {
@@ -1140,8 +1374,35 @@ class MainActivity : ComponentActivity() {
      * Tablets make dialogs very wide by default; keep them compact.
      * [widthDp] is the visible card width (the window adds 24dp inset on each side).
      */
+    /**
+     * Gives an AlertDialog the app's look: a sensible width (never wider than 90% of the screen),
+     * a rounded card with a hairline edge, and calm blue buttons without all-caps.
+     */
     private fun compact(dialog: AlertDialog, widthDp: Int): AlertDialog {
-        dialog.window?.setLayout(dp(widthDp + 48), ViewGroup.LayoutParams.WRAP_CONTENT)
+        val screen = resources.displayMetrics.widthPixels
+        val w = minOf(dp(widthDp), (screen * 0.9f).toInt())
+        dialog.window?.let { win ->
+            win.setBackgroundDrawable(GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat()
+                setColor(0xFF1C1C1E.toInt())
+                setStroke(1, 0x26FFFFFF)
+            })
+            win.setLayout(w, ViewGroup.LayoutParams.WRAP_CONTENT)
+            win.setDimAmount(0.45f)
+        }
+        for (which in intArrayOf(AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_NEUTRAL)) {
+            dialog.getButton(which)?.apply {
+                isAllCaps = false
+                textSize = 15f
+                setTextColor(if (which == AlertDialog.BUTTON_POSITIVE) ACCENT else 0xFFB0B0B8.toInt())
+                typeface = Typeface.create(if (which == AlertDialog.BUTTON_POSITIVE) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+            }
+        }
+        dialog.findViewById<TextView>(android.R.id.message)?.apply {
+            textSize = 14f
+            setTextColor(TEXT_DIM)
+            setLineSpacing(0f, 1.15f)
+        }
         return dialog
     }
 
@@ -2084,6 +2345,26 @@ class MainActivity : ComponentActivity() {
     private val selRect = FloatArray(4)
 
     /** Keeps the image bar next to the selected image: below it, or above if there's no room. */
+    /** Puts a floating bar just below a rect (or above it if there's no room), kept on screen. */
+    private fun placeBar(bar: View, l: Float, t: Float, r: Float, b: Float) {
+        val bw = bar.width
+        val bh = bar.height
+        if (bw == 0 || bh == 0) {
+            bar.post { if (bar.width > 0) placeBar(bar, l, t, r, b) }
+            return
+        }
+        val sw = pdfView.width.toFloat()
+        val sh = pdfView.height.toFloat()
+        val gap = dp(10).toFloat()
+        val m = dp(6).toFloat()
+        var y = b + gap
+        if (y + bh > sh - m) y = t - gap - bh
+        if (y < m) y = (sh - bh - m).coerceAtMost(b + gap)
+        y = y.coerceIn(m, maxOf(m, sh - bh - m))
+        bar.translationX = ((l + r) / 2f - bw / 2f).coerceIn(m, maxOf(m, sw - bw - m))
+        bar.translationY = y
+    }
+
     private fun placeSelBar(l: Float, t: Float, r: Float, b: Float) {
         selRect[0] = l; selRect[1] = t; selRect[2] = r; selRect[3] = b
         if (selBar.visibility != View.VISIBLE) return
@@ -2200,10 +2481,15 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
-    private fun canPaste(): Boolean = clipboardImageUri() != null || Pics.clip?.file?.exists() == true
+    private fun canPaste(): Boolean =
+        clipboardHasSelection() || clipboardImageUri() != null || Pics.clip?.file?.exists() == true
 
     /** Pastes the clipboard image: Margin's own copy keeps its size and crop; others are imported. */
     private fun paste(d: Doc) {
+        if (clipboardHasSelection()) {
+            pasteLasso(d)
+            return
+        }
         val uri = clipboardImageUri()
         val own = Pics.clip
         if (uri != null && !(uri.authority == "$packageName.files" && own != null && own.file.exists())) {
