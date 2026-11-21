@@ -112,11 +112,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private val fastFadeMs = 250L
     // (getters: these fields come before `density` is set)
     private val fastThumbH: Float get() = 46f * density
-    private val fastThumbW: Float get() = 6f * density
+    private val fastThumbW: Float get() = 4f * density
     private val fastGrabW: Float get() = 40f * density
     private val fastRect = RectF()
     private val fastPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val fastTrackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val fastGroovePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeCap = Paint.Cap.BUTT }
     private val fastBubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xEB1C1C1E.toInt() }
     private val fastTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -212,6 +213,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             fastPaint.alpha = (Color.alpha(fastPaint.color) * a).toInt()
             fastRect.set(x, top, x + w, top + fastThumbH)
             canvas.drawRoundRect(fastRect, w / 2f, w / 2f, fastPaint)
+            // three short horizontal grooves across the handle's middle
+            fastGroovePaint.color = if (active || !dark) 0xB3FFFFFF.toInt() else 0x99000000.toInt()
+            fastGroovePaint.alpha = (Color.alpha(fastGroovePaint.color) * a).toInt()
+            fastGroovePaint.strokeWidth = 1f * density
+            val gcy = top + fastThumbH / 2f
+            for (k in -1..1) {
+                val gy = gcy + k * 3.5f * density
+                canvas.drawLine(x + w * 0.2f, gy, x + w * 0.8f, gy, fastGroovePaint)
+            }
             if (active) {
                 // page number beside the handle being dragged, towards the middle of the view
                 val n = currentPageIndex() + 1
@@ -268,6 +278,26 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         return super.onHoverEvent(e)
     }
+
+    /** Rounded corners for the whole view (side by side), in px; 0 = square. */
+    var cornerRadiusPx = 0f
+        set(v) {
+            if (field == v) return
+            field = v
+            if (v > 0f) {
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(view: View, outline: android.graphics.Outline) {
+                        outline.setRoundRect(0, 0, view.width, view.height, cornerRadiusPx)
+                    }
+                }
+                clipToOutline = true
+            } else {
+                clipToOutline = false
+                outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
+            }
+            invalidateOutline()
+            invalidate()
+        }
 
     private val activeMarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -1432,7 +1462,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (activeMark) {
             val w = 2f * density
             activeMarkPaint.strokeWidth = w
-            canvas.drawRect(w / 2f, w / 2f, width - w / 2f, height - w / 2f, activeMarkPaint)
+            // follows the rounded corners
+            val rr = (cornerRadiusPx - w / 2f).coerceAtLeast(0f)
+            canvas.drawRoundRect(w / 2f, w / 2f, width - w / 2f, height - w / 2f, rr, rr, activeMarkPaint)
         }
     }
 

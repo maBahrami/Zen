@@ -37,6 +37,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -85,6 +86,9 @@ class MainActivity : ComponentActivity() {
         private const val TEXT = 0xFFFFFFFF.toInt()
         private const val TEXT_DIM = 0xFF8E8E93.toInt()
         private const val ACCENT = 0xFF0A84FF.toInt()       // systemBlue
+
+        /** Widest a popup menu gets (dp); longer names are shortened in the middle. */
+        private const val MENU_MAX_W = 380
     }
 
     private val docs = ArrayList<Doc>()
@@ -483,6 +487,12 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), dp(2), dp(6), dp(2))
+            // a floating bar with rounded corners, a shade lighter than the window behind it
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(SURFACE)
+                setStroke(1, 0x14FFFFFF)
+            }
         }
         // Open first, then New note
         lateinit var openBtn: ImageView
@@ -541,9 +551,12 @@ class MainActivity : ComponentActivity() {
         // light / dark view of the open document, at the far right
         darkBtn = barIcon(R.drawable.ic_dark, "Dark view") { toggleDark() }
         titleBar.addView(darkBtn, barLp())
-        root.addView(titleBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        titleDivider = divider()
-        root.addView(titleDivider, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+        root.addView(titleBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dp(6), dp(4), dp(6), dp(4)) // room around it, so its rounded corners show
+        })
+        // (the rounded bar needs no line below it; this only keeps a little space)
+        titleDivider = View(this)
+        root.addView(titleDivider, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0))
 
         // ---- canvas with floating tool palette and image bar ----
         val stage = FrameLayout(this)
@@ -1310,7 +1323,12 @@ class MainActivity : ComponentActivity() {
      * A popup that flows out of its anchor like the macOS genie effect and back into it when it closes
      * (a tap outside, or [dismiss]). Same calls as a PopupWindow, so every popup in the app uses it.
      */
-    private inner class GeniePop(private val content: View, widthPx: Int = ViewGroup.LayoutParams.WRAP_CONTENT) {
+    private inner class GeniePop(
+        private val content: View,
+        widthPx: Int = ViewGroup.LayoutParams.WRAP_CONTENT,
+        /** Widest the popup may get (px); 0 = the screen. */
+        private val maxWidthPx: Int = 0,
+    ) {
         private val genie = GenieLayout(this@MainActivity).apply { setPadding(dp(10), dp(4), dp(10), dp(14)) } // shadow room
         private val window: android.widget.PopupWindow
         private val source = RectF()
@@ -1343,9 +1361,11 @@ class MainActivity : ComponentActivity() {
             // measure first: with a known size Android can open it above the anchor when there's no room below
             // (otherwise a popup near the bottom of the screen ends up off-screen)
             val dm = resources.displayMetrics
+            val maxW = if (maxWidthPx > 0) minOf(dm.widthPixels, maxWidthPx + dp(20)) else dm.widthPixels
             genie.measure(
-                View.MeasureSpec.makeMeasureSpec(dm.widthPixels, View.MeasureSpec.AT_MOST),
-                View.MeasureSpec.makeMeasureSpec(dm.heightPixels, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.AT_MOST),
+                // at most 70% of the screen's height; longer menus scroll
+                View.MeasureSpec.makeMeasureSpec((dm.heightPixels * 0.7f).toInt(), View.MeasureSpec.AT_MOST),
             )
             window.width = genie.measuredWidth
             window.height = genie.measuredHeight
@@ -1398,14 +1418,22 @@ class MainActivity : ComponentActivity() {
     /** A menu of text rows in a genie popup; the chosen action runs once the menu has gone back. */
     private fun showGenieMenu(anchor: View, items: List<GItem>) {
         if (items.isEmpty() || !anchor.isAttachedToWindow) return
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        // the card: as wide as its rows need (long names are shortened in the middle), never wider than
+        // [MENU_MAX_W]; a long menu scrolls instead of filling the screen
+        val card = FrameLayout(this).apply {
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = glass(14)
             elevation = dp(10).toFloat()
             minimumWidth = dp(210)
         }
-        val pop = GeniePop(box)
+        val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(box, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        card.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val pop = GeniePop(card, maxWidthPx = dp(MENU_MAX_W))
         fun line() = View(this).apply { setBackgroundColor(0x26FFFFFF) }
         for ((k, item) in items.withIndex()) {
             if (item.header != null) {
@@ -1959,6 +1987,10 @@ class MainActivity : ComponentActivity() {
         splitHandle.visibility = paneB.visibility
         paneA.activeMark = split && pdfView === paneA
         paneB.activeMark = split && pdfView === paneB
+        // side by side, each side is a window with gently rounded corners
+        val corner = if (split) dp(12).toFloat() else 0f
+        paneA.cornerRadiusPx = corner
+        paneB.cornerRadiusPx = corner
         // two canvases share the memory one canvas would use
         paneA.setMemoryShare(if (split) 0.5f else 1f)
         paneB.setMemoryShare(0.5f)
@@ -2035,8 +2067,9 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(BG)
             contentDescription = "Drag to resize, tap for the swap button, hold for half and half"
         }
-        val grip = View(this).apply { background = rounded(0xFF636366.toInt(), 3) }
-        handle.addView(grip, FrameLayout.LayoutParams(dp(5), dp(44), Gravity.CENTER))
+        // a tall rounded bar with short horizontal grooves: different from the slim scroll handle
+        val grip = GripDots(this)
+        handle.addView(grip, FrameLayout.LayoutParams(dp(7), dp(68), Gravity.CENTER))
         val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
         var downY = 0f
@@ -2046,7 +2079,6 @@ class MainActivity : ComponentActivity() {
         var startRatio = 0.5f
         var atEdge = 0          // -1 far left, 1 far right, 0 neither
         var edgeAsked = false
-        val idle = rounded(0xFF636366.toInt(), 3)
         val edgeAsk = Runnable {
             if (!split || atEdge == 0) return@Runnable
             edgeAsked = true
@@ -2064,7 +2096,7 @@ class MainActivity : ComponentActivity() {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     v.parent?.requestDisallowInterceptTouchEvent(true)
-                    grip.background = rounded(ACCENT, 3)
+                    grip.color = ACCENT
                     downX = e.rawX; downY = e.rawY
                     dragging = false
                     held = false
@@ -2093,11 +2125,11 @@ class MainActivity : ComponentActivity() {
                             atEdge = edge
                             handle.removeCallbacks(edgeAsk)
                             if (edge != 0) {
-                                grip.background = rounded(0xFFFF9F0A.toInt(), 3) // orange: keep holding
+                                grip.color = 0xFFFF9F0A.toInt() // orange: keep holding
                                 handle.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
                                 handle.postDelayed(edgeAsk, 700)
                             } else {
-                                grip.background = rounded(ACCENT, 3)
+                                grip.color = ACCENT
                             }
                         }
                     }
@@ -2105,7 +2137,7 @@ class MainActivity : ComponentActivity() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     handle.removeCallbacks(hold)
                     handle.removeCallbacks(edgeAsk)
-                    grip.background = idle
+                    grip.color = GripDots.IDLE
                     if (edgeAsked) {
                         // the ungroup question decides what happens next
                     } else if (dragging) {
