@@ -830,6 +830,11 @@ class MainActivity : ComponentActivity() {
         hlBtn.setImageResource(if (pdfView.hlStraight) R.drawable.ic_highlighter_straight else R.drawable.ic_highlighter)
         setToolSelected(hlBtn, drawing && hlMode)
         setToolSelected(eraserBtn, pdfView.eraserMode)
+        // the pen and highlighter icons wear their own colour (the blue circle still marks the active tool);
+        // the toolbar is dark, so black ink shows as white, as on dark paper
+        val opaque = 0xFF000000.toInt()
+        penBtn.imageTintList = ColorStateList.valueOf(Dark.ink(prefs.getInt("color", COLORS[0])) or opaque)
+        hlBtn.imageTintList = ColorStateList.valueOf(Dark.ink(prefs.getInt("hl_color", YELLOW)) or opaque)
         // in dark view the palette shows the colours as they are drawn there (black shows as white)
         val dark = active?.dark == true
         paletteDark = dark
