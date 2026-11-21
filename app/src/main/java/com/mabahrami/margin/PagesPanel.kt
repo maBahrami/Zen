@@ -210,7 +210,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
         var h = 17
         for (s in p.strokes) h = h * 31 + System.identityHashCode(s)
         for (im in p.images) h = h * 31 + im.state().hashCode()
-        return "${System.identityHashCode(p)}:${p.strokes.size}:${p.images.size}:$h:${d.leftOf(p)}:${d.rightOf(p)}:${d.marginPaperOf(p)}"
+        return "${System.identityHashCode(p)}:${p.strokes.size}:${p.images.size}:$h:${d.leftOf(p)}:${d.rightOf(p)}:${d.marginPaperOf(p)}:${d.dark}"
     }
 
     private class Snap(
@@ -218,13 +218,14 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
         val mL: Float, val mR: Float,
         val strokes: List<Stroke>,
         val images: List<Pair<File, ImgState>>,
+        val dark: Boolean,
     )
 
     private fun request(d: Doc, p: Page, key: String, tw: Int, th: Int) {
         if (!pending.add(key)) return
         val gen = generation
         val snap = Snap(p.file, p.src, p.w, p.h, if (p.isBlank) p.paper else PAPER_BLANK, d.marginPaperOf(p), d.leftOf(p), d.rightOf(p), ArrayList(p.strokes),
-            p.images.map { File(d.dir, it.file) to it.state() })
+            p.images.map { File(d.dir, it.file) to it.state() }, d.dark)
         try {
             renderExec.execute {
                 val bmp = render(d, snap, tw, th)
@@ -315,6 +316,13 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
                 ink.strokeWidth = max(st.width, 0.8f / sc) // keep thin lines visible when tiny
                 ink.pathEffect = linePattern(st.style, st.width)?.let { DashPathEffect(it, 0f) }
                 c.drawPath(st.path, ink)
+            }
+            if (s.dark) {
+                // photos keep their colours, like on the page itself
+                val keep = s.images.map { (_, st) ->
+                    RectF((st.x + s.mL) * sc, st.y * sc, (st.x + st.w + s.mL) * sc, (st.y + st.h) * sc)
+                }
+                Dark.process(bmp, keep)
             }
             bmp
         } catch (t: Throwable) {
@@ -407,6 +415,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
                 h.frame.layoutParams = lp
             }
             h.number.text = "${position + 1}"
+            h.thumb.setBackgroundColor(if (d.dark) Dark.PAPER else Color.WHITE)
             val selected = position == current
             h.frame.foreground = GradientDrawable().apply {
                 setColor(Color.TRANSPARENT)

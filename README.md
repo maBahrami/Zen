@@ -2,7 +2,7 @@
 
 A minimal PDF annotator for the Samsung Galaxy Tab S9+ (S Pen), built for studying papers and lecture notes.
 
-**Version 1.0** · [Download the latest APK](https://github.com/maBahrami/Zen/releases/latest)
+**Version 1.1** · [Download the latest APK](https://github.com/maBahrami/Zen/releases/latest)
 
 ## Features
 
@@ -15,7 +15,9 @@ A minimal PDF annotator for the Samsung Galaxy Tab S9+ (S Pen), built for studyi
 - **Undo / redo** – up to 100 steps.
 - **Images** – from gallery, camera (with crop), clipboard (e.g. Mac2Tab screenshots) or copied from the PDF itself; move across pages, resize, crop, lock.
 - **Save / Export / Share** – Save keeps everything editable in Zen (original, strokes and images are embedded in the PDF); Export and Share give a plain vector PDF that opens anywhere.
-- **Focus mode** – hides the system bars and top bar, keeping only the tools.
+- **New notes** – choose a light or dark page, blank, lined or grid paper, A4 or A5, portrait or landscape, with a live preview.
+- **Dark view** – the moon icon at the top right shows the open document on dark paper: black text and ink turn white, other colours stay readable, and photos keep their natural colours. It is display only, so saved and exported files keep the original colours.
+- **Focus mode** – in steps: the first tap hides the status bar, the second also hides the top bar (Insert, Pages, Margins and Exit then move into the floating toolbar), and Exit shows everything again.
 - **Never loses work** – autosave within 0.2 s, crash-safe writes with backups, tabs restored after restarts, closed tabs kept 7 days under *Recently closed*.
 
 ## Install

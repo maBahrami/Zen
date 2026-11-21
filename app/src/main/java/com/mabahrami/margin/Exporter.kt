@@ -89,7 +89,7 @@ object Exporter {
             marginL = d.marginL,
             marginR = d.marginR,
             pages = pages,
-            embedState = if (withEditData) Store.serialize(d) else null,
+            embedState = if (withEditData) Store.serialize(d, withView = false) else null,
             embedFiles = files,
         )
     }

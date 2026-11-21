@@ -120,9 +120,11 @@ object Store {
     /** True for file names we create ourselves (guards against paths like ../x inside saved files). */
     fun safeRelPath(rel: String): Boolean = SOURCE_NAME.matches(rel) || IMAGE_NAME.matches(rel)
 
-    fun serialize(d: Doc): String {
+    /** [withView]: include display-only settings (dark view); false for state embedded in saved PDFs. */
+    fun serialize(d: Doc, withView: Boolean = true): String {
         val sb = StringBuilder(4096)
         sb.append("{\"v\":3,\"name\":").append(JSONObject.quote(d.name))
+        if (withView && d.dark) sb.append(",\"dark\":true")
         sb.append(",\"save\":").append(JSONObject.quote(d.saveUri ?: ""))
         sb.append(",\"origin\":").append(JSONObject.quote(d.originUri ?: ""))
         sb.append(",\"mL\":"); num(sb, d.marginL)
@@ -253,8 +255,10 @@ object Store {
         val scale: Float, val tx: Float, val ty: Float,
         val unsaved: Boolean,
         val pages: List<Page>,
+        val dark: Boolean = false,
     ) {
         fun applyTo(d: Doc) {
+            d.dark = dark
             d.marginL = mL.coerceIn(0f, 5000f)
             d.marginR = mR.coerceIn(0f, 5000f)
             d.marginPaper = mp
@@ -333,6 +337,7 @@ object Store {
             ty = o.optDouble("ty", 0.0).toFloat(),
             unsaved = o.optBoolean("unsaved", o.optBoolean("dirty", false)),
             pages = pages,
+            dark = o.optBoolean("dark", false),
         )
     }
 

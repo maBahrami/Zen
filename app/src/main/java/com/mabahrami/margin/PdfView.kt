@@ -141,7 +141,21 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private val pending = HashSet<Int>()
     private var generation = 0
 
-    private fun pageKey(p: Page) = p.file * 100_000 + p.src
+    /** Cache key of a page's bitmap; light and dark versions are cached separately. */
+    private fun pageKey(p: Page, dark: Boolean) = (p.file * 100_000 + p.src) * 2 + (if (dark) 1 else 0)
+
+    // ---- dark view ----
+    /** Dark view of the current document (set at the start of every draw). */
+    private var darkView = false
+    /** Shows a page rendered for the other view, colour-flipped, until its proper version is ready. */
+    private val flipPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+        colorFilter = android.graphics.ColorMatrixColorFilter(Dark.quickMatrix)
+    }
+    /** Where photos sit on each PDF page (page-local points), so dark view can leave them natural. Key: doc id, file, page. */
+    private val photoRects = java.util.concurrent.ConcurrentHashMap<String, List<RectF>>()
+    // Render thread only: the PDF last opened with PdfBox to find photos (kept open while scrolling).
+    private var photoPdfPath: String? = null
+    private var photoPdf: com.tom_roush.pdfbox.pdmodel.PDDocument? = null
 
     // ---- image bitmap cache, keyed by absolute path ----
     private val imgCache = object : LruCache<String, Bitmap>(IMG_CACHE_BYTES) {
@@ -231,6 +245,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         blendMode = android.graphics.BlendMode.MULTIPLY
         alpha = (HIGHLIGHT_ALPHA * 255).toInt()
     }
+
+    /** Highlights multiply onto light paper; on dark paper they screen (the dark twin), so they still show. */
+    private fun hlBlend(p: Paint) {
+        p.blendMode = if (darkView) android.graphics.BlendMode.SCREEN else android.graphics.BlendMode.MULTIPLY
+        p.alpha = ((if (darkView) Dark.HIGHLIGHT_ALPHA else HIGHLIGHT_ALPHA) * 255).toInt()
+    }
     private val hlBounds = RectF()
 
     private fun hlStyle(color: Int, width: Float) {
@@ -240,7 +260,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private val dashCache = HashMap<Long, DashPathEffect>()
 
     private fun applyStyle(color: Int, width: Float, style: Int) {
-        inkPaint.color = color
+        inkPaint.color = if (darkView) Dark.ink(color) else color
         inkPaint.strokeWidth = width
         val pattern = linePattern(style, width)
         inkPaint.pathEffect = if (pattern == null) null
@@ -309,6 +329,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         imgCache.evictAll()
         imgPending.clear()
         generation++
+        if (doc !== d) {
+            photoRects.clear()
+            try {
+                renderExec.execute { closePhotoPdf() }
+            } catch (ignored: Exception) {
+            }
+        }
         doc = d
         clearSelection()
         clearLasso()
@@ -924,6 +951,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(0xFF121214.toInt())
         val d = doc
+        val dk = d?.dark == true
+        if (dk != darkView) {
+            darkView = dk
+            shadowPaint.color = if (dk) Dark.PAPER else Color.WHITE
+            rulePaint.color = if (dk) Dark.RULE else 0xFFD6D6DA.toInt()
+            edgePaint.color = if (dk) Dark.EDGE else 0x33000000
+            placeholderPaint.color = if (dk) Dark.PLACEHOLDER else 0xFFE6E6E6.toInt()
+            hlBlend(hlLayerPaint)
+        }
         if (d == null) {
             // Nothing open: just the Zen ensō, softly, in the middle.
             emptyLogo?.let { logo ->
@@ -965,8 +1001,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             val ox = left + pl
             if (!page.isBlank) {
                 dst.set(ox, top, ox + page.w, bottom)
-                val pb = cache.get(pageKey(page))
+                val pb = cache.get(pageKey(page, dk))
                 if (pb != null) canvas.drawBitmap(pb.bmp, null, dst, bmpPaint)
+                else cache.get(pageKey(page, !dk))?.let { canvas.drawBitmap(it.bmp, null, dst, flipPaint) }
                 val want = bucketFor(page, s)
                 if (pb == null || (!interacting && abs(pb.scale - want) > 0.01f)) requestRender(d, page, want)
                 if (hasMargins) {
@@ -1090,8 +1127,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 for (im in selImages) drawImage(d, canvas, im)
                 for (st in selStrokes) {
                     if (st.highlighter) {
-                        hlStyle(st.color, st.width); hlPaint.blendMode = android.graphics.BlendMode.MULTIPLY
-                        hlPaint.alpha = (HIGHLIGHT_ALPHA * 255).toInt()
+                        hlStyle(st.color, st.width); hlBlend(hlPaint)
                         canvas.drawPath(st.path, hlPaint)
                         hlPaint.blendMode = null; hlPaint.alpha = 255
                     } else {
@@ -1194,16 +1230,29 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     private fun requestRender(d: Doc, page: Page, scale: Float) {
         if (page.src < 0) return
-        val key = pageKey(page)
+        val dark = d.dark
+        val key = pageKey(page, dark)
         if (!pending.add(key)) return
         val gen = generation
         val w = max(1, (page.w * scale).toInt())
         val h = max(1, (page.h * scale).toInt())
         val file = page.file
         val src = page.src
+        val pw = page.w
+        val ph = page.h
         try {
             renderExec.execute {
                 val bmp = renderPage(d, file, src, w, h)
+                if (bmp != null && dark) {
+                    try {
+                        val sx = w.toFloat() / pw
+                        val sy = h.toFloat() / ph
+                        val keep = photoRectsOf(d, file, src, pw, ph).map { RectF(it.left * sx, it.top * sy, it.right * sx, it.bottom * sy) }
+                        Dark.process(bmp, keep)
+                    } catch (t: Throwable) {
+                        // never fail a page because of dark view: worst case it stays light
+                    }
+                }
                 post {
                     if (gen != generation) return@post
                     pending.remove(key)
@@ -1215,6 +1264,44 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
         } catch (e: Exception) {
             pending.remove(key) // executor already shut down (activity closing)
+        }
+    }
+
+    /** Runs on the render thread: where photos are on a PDF page (cached; empty if it can't tell). */
+    private fun photoRectsOf(d: Doc, file: Int, src: Int, pw: Int, ph: Int): List<RectF> {
+        val key = "${d.id}:$file:$src"
+        photoRects[key]?.let { return it }
+        if (d.closed) return emptyList()
+        val name = d.sources.getOrNull(file)?.name ?: return emptyList()
+        val f = File(d.dir, name)
+        val rects = try {
+            if (photoPdfPath != f.path) {
+                closePhotoPdf()
+                photoPdfPath = f.path // set first: a file PdfBox can't open is tried only once
+                photoPdf = com.tom_roush.pdfbox.pdmodel.PDDocument.load(f,
+                    com.tom_roush.pdfbox.io.MemoryUsageSetting.setupTempFileOnly())
+            }
+            photoPdf?.let { PdfImages.rects(it, src, pw, ph) } ?: emptyList()
+        } catch (t: Throwable) {
+            emptyList() // unreadable for PdfBox (or out of memory): darken the whole page
+        }
+        photoRects[key] = rects
+        return rects
+    }
+
+    /** Render thread only. */
+    private fun closePhotoPdf() {
+        try { photoPdf?.close() } catch (ignored: Throwable) {}
+        photoPdf = null
+        photoPdfPath = null
+    }
+
+    /** Closes what the render thread keeps open for dark view (call before the render thread shuts down). */
+    fun release() {
+        try {
+            renderExec.execute { closePhotoPdf() }
+        } catch (ignored: Exception) {
+            // executor already shut down
         }
     }
 

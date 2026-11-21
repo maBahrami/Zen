@@ -120,7 +120,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var titleBar: View
     private lateinit var titleDivider: View
     private val focusOnlyViews = ArrayList<View>()
-    private var focusMode = false
+    /** Focus mode: 0 = off, 1 = status bar hidden, 2 = status bar, navigation bar and top bar hidden. */
+    private var focusLevel = 0
+    private lateinit var focusBtn: ImageView
+    private lateinit var darkBtn: ImageView
     private val swatches = ArrayList<Pair<Int, View>>()
     private lateinit var prefs: SharedPreferences
     private val shownUnsaved = HashMap<String, Boolean>()
@@ -224,7 +227,9 @@ class MainActivity : ComponentActivity() {
         }
         setContentView(buildUi())
         loadTool()
-        if (prefs.getBoolean("focus", false)) setFocusMode(true)
+        // "focus" (on/off) is the setting from v1.0: on meant everything hidden
+        val savedFocus = prefs.getInt("focus_level", if (prefs.getBoolean("focus", false)) 2 else 0)
+        if (savedFocus > 0) setFocusLevel(savedFocus)
         restoreSession(if (savedInstanceState == null) intent else null)
         ioExec.execute {
             try {
@@ -273,6 +278,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         main.removeCallbacks(flushRunnable)
         val all = ArrayList(docs)
+        pdfView.release()
         renderExec.execute { for (d in all) d.closeRenderer() }
         renderExec.shutdown()
         ioExec.shutdown()
@@ -368,7 +374,7 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), dp(2), dp(6), dp(2))
         }
-        titleBar.addView(barIcon(R.drawable.ic_new, "New note") { newNote() }, barLp(0))
+        titleBar.addView(barIcon(R.drawable.ic_new, "New note") { askNewNote() }, barLp(0))
         lateinit var openBtn: ImageView
         openBtn = barIcon(R.drawable.ic_open, "Open") { showOpenMenu(openBtn) }
         titleBar.addView(openBtn, barLp())
@@ -419,7 +425,11 @@ class MainActivity : ComponentActivity() {
         // file & view (a wider gap separates the groups)
         titleBar.addView(saveBtn, barLp(10))
         titleBar.addView(barIcon(R.drawable.ic_share, "Share") { active?.let { share(it) } }, barLp())
-        titleBar.addView(barIcon(R.drawable.ic_focus, "Focus mode") { setFocusMode(true) }, barLp())
+        focusBtn = barIcon(R.drawable.ic_focus, "Focus mode") { setFocusLevel(if (focusLevel == 0) 1 else 2) }
+        titleBar.addView(focusBtn, barLp())
+        // light / dark view of the open document, at the far right
+        darkBtn = barIcon(R.drawable.ic_dark, "Dark view") { toggleDark() }
+        titleBar.addView(darkBtn, barLp())
         root.addView(titleBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         titleDivider = divider()
         root.addView(titleDivider, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
@@ -509,7 +519,7 @@ class MainActivity : ComponentActivity() {
         palette.addView(undoBtn, palLp())
         palette.addView(redoBtn, palLp())
         // focus mode only: Insert · Pages · Margins, then Exit at the very end
-        val fExit = iconButton(R.drawable.ic_unfocus, "Exit focus mode") { setFocusMode(false) }
+        val fExit = iconButton(R.drawable.ic_unfocus, "Exit focus mode") { setFocusLevel(0) }
         val fDiv = divider()
         palette.addView(fDiv, palDivider())
         palette.addView(fInsert, palLp())
@@ -674,19 +684,32 @@ class MainActivity : ComponentActivity() {
         setWidth(nw.coerceIn(unit, unit * 40))
     }
 
-    /** Focus mode: hides the status bar and the top bar; the floating toolbar gets Insert/Pages/Margins. */
-    private fun setFocusMode(on: Boolean) {
-        focusMode = on
-        prefs.edit().putBoolean("focus", on).apply()
-        titleBar.visibility = if (on) View.GONE else View.VISIBLE
+    /**
+     * Focus mode in steps. Level 1 hides only the status bar (clock, wifi, battery). Level 2 also hides the
+     * navigation bar and the top bar; the floating toolbar then gets Insert/Pages/Margins/Exit.
+     * Level 0 shows everything again.
+     */
+    private fun setFocusLevel(level: Int) {
+        focusLevel = level.coerceIn(0, 2)
+        prefs.edit().putInt("focus_level", focusLevel).remove("focus").apply()
+        val full = focusLevel == 2
+        titleBar.visibility = if (full) View.GONE else View.VISIBLE
         titleDivider.visibility = titleBar.visibility
-        for (v in focusOnlyViews) v.visibility = if (on) View.VISIBLE else View.GONE
+        for (v in focusOnlyViews) v.visibility = if (full) View.VISIBLE else View.GONE
+        // the focus icon shows blue while the first step is on; the next tap hides the top bar too
+        focusBtn.imageTintList = ColorStateList.valueOf(if (focusLevel == 1) ACCENT else 0xFFD1D1D6.toInt())
+        val focusDesc = if (focusLevel == 1) "Focus mode: hide the top bar too" else "Focus mode"
+        focusBtn.contentDescription = focusDesc
+        focusBtn.tooltipText = focusDesc
         window.insetsController?.let { c ->
-            if (on) {
-                c.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                c.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-            } else {
-                c.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            c.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            when (focusLevel) {
+                0 -> c.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                1 -> {
+                    c.show(WindowInsets.Type.navigationBars())
+                    c.hide(WindowInsets.Type.statusBars())
+                }
+                else -> c.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
             }
         }
     }
@@ -694,7 +717,28 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // bars can come back after dialogs or app switches: hide them again
-        if (hasFocus && focusMode) setFocusMode(true)
+        if (hasFocus && focusLevel > 0) setFocusLevel(focusLevel)
+    }
+
+    /** Light / dark view of the open document. Display only: saved and exported files keep the original colours. */
+    private fun toggleDark() {
+        val d = active ?: return
+        d.dark = !d.dark
+        pdfView.invalidate()
+        if (pagesPanel.visibility == View.VISIBLE) pagesPanel.refresh()
+        updateDarkButton()
+        markDirty(d) // remembers the choice in the working state (doesn't mark the file unsaved)
+    }
+
+    private fun updateDarkButton() {
+        val d = active
+        val dark = d?.dark == true
+        darkBtn.setImageResource(if (dark) R.drawable.ic_light else R.drawable.ic_dark)
+        val desc = if (dark) "Light view" else "Dark view"
+        darkBtn.contentDescription = desc
+        darkBtn.tooltipText = desc
+        darkBtn.isEnabled = d != null
+        darkBtn.alpha = if (d != null) 1f else 0.3f
     }
 
     /** Second tap on the highlighter: freehand (curvy line) or straight lines only. */
@@ -879,6 +923,7 @@ class MainActivity : ComponentActivity() {
         undoBtn.alpha = if (undoBtn.isEnabled) 1f else 0.3f
         redoBtn.isEnabled = d?.canRedo == true
         redoBtn.alpha = if (redoBtn.isEnabled) 1f else 0.3f
+        updateDarkButton()
         // refresh the "unsaved" dot on tabs only when it actually changes
         if (docs.any { shownUnsaved[it.id] != it.unsaved }) rebuildTabs()
     }
@@ -1594,8 +1639,63 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** A new tab with one blank A4 page; saved like any other document. */
-    private fun newNote() {
+    /** New note window: light or dark page, paper, size and orientation, with a live preview. */
+    private fun askNewNote() {
+        var dark = prefs.getBoolean("newnote_dark", false)
+        var paper = prefs.getInt("newnote_paper", PAPER_BLANK).coerceIn(PAPER_BLANK, PAPER_GRID)
+        var size = prefs.getInt("newnote_size", 0).coerceIn(0, 1)            // 0 = A4, 1 = A5
+        var landscape = prefs.getBoolean("newnote_landscape", false)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(8), dp(24), dp(4))
+        }
+        fun label(t: String) = TextView(this).apply {
+            text = t
+            textSize = 12f
+            setTextColor(TEXT_DIM)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, dp(5))
+        }
+        fun wrapLp() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        fun dims(): Pair<Int, Int> {
+            val (w0, h0) = if (size == 1) 420 to 595 else 595 to 842
+            return if (landscape) h0 to w0 else w0 to h0
+        }
+        val preview = PaperPreview(this)
+        fun refresh() {
+            val (w, h) = dims()
+            preview.set(w, h, paper, dark)
+        }
+        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(170)))
+        box.addView(label("Page"))
+        box.addView(segmented(listOf("Light", "Dark"), if (dark) 1 else 0) { dark = it == 1; refresh() }, wrapLp())
+        box.addView(label("Paper"))
+        box.addView(segmented(listOf("Blank", "Lined", "Grid"), paper) { paper = it; refresh() }, wrapLp())
+        box.addView(label("Size"))
+        box.addView(segmented(listOf("A4", "A5"), size) { size = it; refresh() }, wrapLp())
+        box.addView(label("Orientation"))
+        box.addView(segmented(listOf("Portrait", "Landscape"), if (landscape) 1 else 0) { landscape = it == 1; refresh() }, wrapLp())
+        refresh()
+        AlertDialog.Builder(this)
+            .setTitle("New note")
+            .setView(box)
+            .setPositiveButton("Create") { _, _ ->
+                prefs.edit().putBoolean("newnote_dark", dark).putInt("newnote_paper", paper)
+                    .putInt("newnote_size", size).putBoolean("newnote_landscape", landscape).apply()
+                val (w, h) = dims()
+                newNote(w, h, paper, dark)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+            .let { compact(it, 340) }
+    }
+
+    /**
+     * A new tab with one blank page of [w] x [h] points and [paper] ruling, shown in dark view if [dark];
+     * saved like any other document.
+     */
+    private fun newNote(w: Int, h: Int, paper: Int, dark: Boolean) {
         lifecycleScope.launch {
             val id = UUID.randomUUID().toString()
             val dir = File(Store.root(this@MainActivity), id)
@@ -1604,13 +1704,20 @@ class MainActivity : ComponentActivity() {
                     dir.mkdirs()
                     val tmp = File(dir, "source.pdf.tmp")
                     com.tom_roush.pdfbox.pdmodel.PDDocument().use { doc ->
-                        doc.addPage(com.tom_roush.pdfbox.pdmodel.PDPage(com.tom_roush.pdfbox.pdmodel.common.PDRectangle.A4))
+                        doc.addPage(com.tom_roush.pdfbox.pdmodel.PDPage(
+                            com.tom_roush.pdfbox.pdmodel.common.PDRectangle(w.toFloat(), h.toFloat())))
                         doc.save(tmp)
                     }
                     if (!tmp.renameTo(File(dir, "source.pdf"))) throw IOException("can't create the note")
                 }
                 val name = "Note " + SimpleDateFormat("yyyy-MM-dd HH.mm", Locale.getDefault()).format(Date()) + ".pdf"
                 val d = withContext(renderDispatcher) { openDoc(id, dir, name) }
+                // the note's page is a Zen blank page, so it carries the chosen paper (and later pages can match it)
+                if (d.pages.size == 1) {
+                    val first = d.pages[0]
+                    d.pages[0] = Page(0, -1, first.w, first.h, paper)
+                }
+                d.dark = dark
                 d.unsaved = false
                 addDoc(d, true)
                 markDirty(d)

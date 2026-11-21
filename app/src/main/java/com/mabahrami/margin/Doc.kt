@@ -317,6 +317,9 @@ class Doc(
     /** The file this tab was opened from (for "Save in place"), if known. */
     var originUri: String? = null
 
+    /** Dark view (display only: never changes what Save or Export writes). */
+    var dark = false
+
     // Viewport (scale 0 = not initialised yet)
     var scale = 0f
     var tx = 0f
