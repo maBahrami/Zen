@@ -442,12 +442,19 @@ class MainActivity : ComponentActivity() {
         palette.addView(hlBtn, palLp(1))
         palette.addView(eraserBtn, palLp(1))
         palette.addView(divider(), palDivider())
+        // colours: one continuous strip of rectangles, rounded at the ends
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(Color.TRANSPARENT, 7)
+            clipToOutline = true
+        }
         for (c in COLORS) {
             val v = View(this)
             v.setOnClickListener { setColor(c) }
             swatches.add(c to v)
-            palette.addView(v, LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginStart = dp(5); marginEnd = dp(5) })
+            strip.addView(v, LinearLayout.LayoutParams(dp(24), dp(28)))
         }
+        palette.addView(strip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         palette.addView(divider(), palDivider())
         palette.addView(iconButton(R.drawable.ic_minus, "Thinner") { stepWidth(-1) }, LinearLayout.LayoutParams(dp(28), dp(34)))
         val seek = SeekBar(this).apply {
@@ -560,6 +567,7 @@ class MainActivity : ComponentActivity() {
         pagesPanel.onPageMenu = { anchor, i -> showThumbMenu(anchor, i) }
         pagesPanel.onClose = { setPagesVisible(false) }
         pagesPanel.onPageMoved = { from, to, page -> pdfView.pageMoved(from, to, page) }
+        pagesPanel.onAddPage = { addPageLikeLast() }
         body.addView(pagesPanel, LinearLayout.LayoutParams(dp(PagesPanel.WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT))
         pagesPanelDivider = divider().apply { visibility = View.GONE }
         body.addView(pagesPanelDivider, LinearLayout.LayoutParams(1, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -589,13 +597,11 @@ class MainActivity : ComponentActivity() {
         for ((c, v) in swatches) {
             val selected = c == pdfView.penColor && !pdfView.eraserMode
             v.background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
+                shape = GradientDrawable.RECTANGLE
                 setColor(c)
-                // white ring for the current colour; dark colours get a faint edge so they stay visible
-                if (selected) setStroke(dp(2), Color.WHITE) else setStroke(1, 0x55FFFFFF)
+                // white inner frame marks the current colour
+                if (selected) setStroke(dp(2), Color.WHITE)
             }
-            val sc = if (selected) 1f else 0.78f
-            v.animate().scaleX(sc).scaleY(sc).setDuration(120).start()
         }
         val w = pdfView.penWidth
         widthLabel.text = if (w % 1f == 0f) "${w.toInt()}" else String.format("%.2f", w).trimEnd('0').trimEnd('.')
@@ -837,6 +843,7 @@ class MainActivity : ComponentActivity() {
             .create()
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         dialog.show()
+        compact(dialog, 360)
         input.requestFocus()
     }
 
@@ -1129,6 +1136,122 @@ class MainActivity : ComponentActivity() {
         if (!on) pagesBtn.imageTintList = ColorStateList.valueOf(0xFFD1D1D6.toInt())
     }
 
+    /**
+     * Tablets make dialogs very wide by default; keep them compact.
+     * [widthDp] is the visible card width (the window adds 24dp inset on each side).
+     */
+    private fun compact(dialog: AlertDialog, widthDp: Int): AlertDialog {
+        dialog.window?.setLayout(dp(widthDp + 48), ViewGroup.LayoutParams.WRAP_CONTENT)
+        return dialog
+    }
+
+    /** Small iOS-style segmented control. */
+    private fun segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit): LinearLayout {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            background = rounded(0xFF2C2C2E.toInt(), 10)
+        }
+        val items = ArrayList<TextView>()
+        fun style(sel: Int) {
+            for ((k, v) in items.withIndex()) {
+                v.background = if (k == sel) rounded(0xFF636366.toInt(), 8) else null
+                v.setTextColor(if (k == sel) TEXT else TEXT_DIM)
+            }
+        }
+        for ((k, label) in options.withIndex()) {
+            val v = TextView(this).apply {
+                text = label
+                textSize = 14f
+                gravity = Gravity.CENTER
+                minWidth = dp(64)
+                setPadding(dp(14), dp(6), dp(14), dp(6))
+                isClickable = true
+                setOnClickListener { style(k); onSelect(k) }
+            }
+            items.add(v)
+            bar.addView(v, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        style(selected)
+        return bar
+    }
+
+    /** New page: size (same as document / A4 / A5) and paper (blank / lined / grid). */
+    private fun askNewPage(index: Int) {
+        val d = active ?: return
+        var size = prefs.getInt("newpage_size", 0)
+        var paper = prefs.getInt("newpage_paper", PAPER_BLANK)
+        var landscape = prefs.getBoolean("newpage_landscape", false)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(8), dp(24), dp(4))
+        }
+        fun label(t: String) = TextView(this).apply {
+            text = t
+            textSize = 12f
+            setTextColor(TEXT_DIM)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, dp(5))
+        }
+        fun wrapLp() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        // page size in points for the current choices
+        fun dims(): Pair<Int, Int> {
+            val (w0, h0) = when (size) {
+                1 -> 595 to 842                 // A4
+                2 -> 420 to 595                 // A5
+                else -> {
+                    val src = d.sources.firstOrNull()
+                    if (src != null && src.w.isNotEmpty()) src.w[0] to src.h[0] else 595 to 842
+                }
+            }
+            return if (landscape) maxOf(w0, h0) to minOf(w0, h0) else minOf(w0, h0) to maxOf(w0, h0)
+        }
+        val preview = PaperPreview(this)
+        fun refresh() {
+            val (w, h) = dims()
+            preview.set(w, h, paper)
+        }
+        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(200)))
+        box.addView(label("Size"))
+        box.addView(segmented(listOf("Document", "A4", "A5"), size) { size = it; refresh() }, wrapLp())
+        box.addView(label("Orientation"))
+        box.addView(segmented(listOf("Portrait", "Landscape"), if (landscape) 1 else 0) { landscape = it == 1; refresh() }, wrapLp())
+        box.addView(label("Paper"))
+        box.addView(segmented(listOf("Blank", "Lined", "Grid"), paper) { paper = it; refresh() }, wrapLp())
+        refresh()
+        AlertDialog.Builder(this)
+            .setTitle("New page")
+            .setView(box)
+            .setPositiveButton("Add") { _, _ ->
+                if (active !== d) return@setPositiveButton
+                prefs.edit().putInt("newpage_size", size).putInt("newpage_paper", paper)
+                    .putBoolean("newpage_landscape", landscape).apply()
+                val (w, h) = dims()
+                pdfView.insertBlankPage(index, w, h, paper)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+            .let { compact(it, 340) }
+    }
+
+    /** "+" in the page overview: a new page at the end with the last page's size, paper and margins. */
+    private fun addPageLikeLast() {
+        val d = active ?: return
+        val last = d.pages.lastOrNull()
+        val page = Page(0, -1, last?.w ?: 595, last?.h ?: 842, if (last != null && last.isBlank) last.paper else PAPER_BLANK)
+        if (last != null) {
+            page.mL = last.mL
+            page.mR = last.mR
+            page.mPaper = last.mPaper
+        }
+        val at = d.pageCount
+        pdfView.insertPages(at, listOf(page))
+        pdfView.post { pdfView.scrollToPage(at) }
+        pagesPanel.setCurrent(at)
+        pagesPanel.scrollToCurrent()
+    }
+
     /** ⋮ on a thumbnail. */
     private fun showThumbMenu(anchor: View, i: Int) {
         val d = active ?: return
@@ -1139,7 +1262,7 @@ class MainActivity : ComponentActivity() {
         pm.setOnMenuItemClickListener { item ->
             if (active === d && i in 0 until d.pageCount) {
                 when (item.itemId) {
-                    2 -> pdfView.insertBlankPage(i + 1)
+                    2 -> askNewPage(i + 1)
                     3 -> { insertAfterIndex = i; pickPdf(d) }
                     4 -> if (!pdfView.deletePage(i)) toast("Can't delete the only page")
                 }
@@ -1161,9 +1284,9 @@ class MainActivity : ComponentActivity() {
         pm.setOnMenuItemClickListener { item ->
             if (active === d) {
                 when (item.itemId) {
-                    1 -> pdfView.insertBlankPage(cur + 1)
-                    2 -> pdfView.insertBlankPage(cur)
-                    3 -> pdfView.insertBlankPage(d.pageCount)
+                    1 -> askNewPage(cur + 1)
+                    2 -> askNewPage(cur)
+                    3 -> askNewPage(d.pageCount)
                     4 -> {
                         if (pdfView.deletePage(cur)) toast("Page $n deleted (Undo brings it back)")
                         else toast("Can't delete the only page")
@@ -1490,6 +1613,17 @@ class MainActivity : ComponentActivity() {
 
         lateinit var left: SeekBar
         lateinit var right: SeekBar
+        var marginPaper = if (thisPageOnly && page != null) d.marginPaperOf(page) else d.marginPaper
+        preview.setPaper(marginPaper)
+        val paperBox = FrameLayout(this)
+        fun buildPaperSegment() {
+            paperBox.removeAllViews()
+            paperBox.addView(segmented(listOf("Blank", "Lined", "Grid"), marginPaper) {
+                marginPaper = it
+                preview.setPaper(it)
+            }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL))
+        }
+        buildPaperSegment()
         fun row(title: String, init: Float): SeekBar {
             val label = TextView(this).apply { textSize = 14f; setTextColor(TEXT) }
             val sb = SeekBar(this).apply {
@@ -1532,11 +1666,23 @@ class MainActivity : ComponentActivity() {
             left.progress = (l / 10f).roundToInt().coerceIn(0, 60)
             right.progress = (r / 10f).roundToInt().coerceIn(0, 60)
             preview.setMargins(left.progress * 10f, right.progress * 10f)
+            marginPaper = if (one && page != null) d.marginPaperOf(page) else d.marginPaper
+            preview.setPaper(marginPaper)
+            buildPaperSegment()
             styleSegment()
         }
         segAll.setOnClickListener { switchScope(false) }
         segOne.setOnClickListener { switchScope(true) }
         styleSegment()
+        box.addView(TextView(this).apply {
+            text = "Margin paper"
+            textSize = 13f
+            setTextColor(TEXT_DIM)
+            setPadding(0, dp(2), 0, dp(6))
+        })
+        box.addView(paperBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(8)
+        })
         box.addView(TextView(this).apply {
             text = "72 pt = 1 inch. The original page is never scaled."
             textSize = 12f
@@ -1548,12 +1694,13 @@ class MainActivity : ComponentActivity() {
             .setView(box)
             .setPositiveButton("Apply") { _, _ ->
                 if (docs.contains(d) && active === d) {
-                    if (thisPageOnly && page != null) pdfView.setPageMargins(d.pages.indexOf(page), left.progress * 10f, right.progress * 10f)
-                    else pdfView.setMargins(left.progress * 10f, right.progress * 10f)
+                    if (thisPageOnly && page != null) pdfView.setPageMargins(d.pages.indexOf(page), left.progress * 10f, right.progress * 10f, marginPaper)
+                    else pdfView.setMargins(left.progress * 10f, right.progress * 10f, marginPaper)
                 }
             }
             .setNegativeButton("Cancel", null)
             .show()
+            .let { compact(it, 400) }
     }
 
     // ======================= save / export / share =======================
@@ -1639,7 +1786,7 @@ class MainActivity : ComponentActivity() {
         }
         b.setNeutralButton("Save as new file…") { _, _ -> pickSaveLocation(d, chosenName()) }
         b.setNegativeButton("Cancel", null)
-        b.show()
+        compact(b.show(), 380)
     }
 
     private fun pickSaveLocation(d: Doc, base: String = baseName(d.name)) {
@@ -1818,7 +1965,7 @@ class MainActivity : ComponentActivity() {
                     val idx = d.pages.indexOf(pt.page)
                     when (item.itemId) {
                         1 -> { pendingPlace = pt; paste(d) }
-                        5 -> if (idx >= 0) pdfView.insertBlankPage(idx + 1)
+                        5 -> if (idx >= 0) askNewPage(idx + 1)
                         6 -> {
                             if (idx >= 0 && pdfView.deletePage(idx)) toast("Page ${idx + 1} deleted (Undo brings it back)")
                             else toast("Can't delete the only page")

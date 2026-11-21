@@ -19,11 +19,19 @@ class MarginPreview(context: Context, private val pageW: Float, private val page
         set(v) { field = v; invalidate() }
     private var mL = 0f
     private var mR = 0f
+    private var ruling = PAPER_BLANK
 
     fun setMargins(l: Float, r: Float) {
         mL = l; mR = r
         invalidate()
     }
+
+    fun setPaper(p: Int) {
+        ruling = p
+        invalidate()
+    }
+
+    private val rule = Paint().apply { color = 0xFFC8C8CC.toInt() }
 
     private val density = resources.displayMetrics.density
     private val paper = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -57,6 +65,20 @@ class MarginPreview(context: Context, private val pageW: Float, private val page
         // the added margins, faintly tinted
         if (mL > 0f) canvas.drawRect(x0, y0, x0 + mL * s, y0 + h, marginTint)
         if (mR > 0f) canvas.drawRect(x0 + (mL + pageW) * s, y0, x0 + w, y0 + h, marginTint)
+        if (ruling != PAPER_BLANK) {
+            rule.strokeWidth = maxOf(1f, 0.6f * s)
+            canvas.save()
+            canvas.translate(x0, y0)
+            canvas.scale(s, s)
+            rule.strokeWidth = maxOf(1f / s, 0.5f)
+            if (mL > 0f) canvas.drawLines(paperLines(ruling, mL, pageH), rule)
+            if (mR > 0f) {
+                canvas.save(); canvas.translate(mL + pageW, 0f)
+                canvas.drawLines(paperLines(ruling, mR, pageH), rule)
+                canvas.restore()
+            }
+            canvas.restore()
+        }
         // the original page
         r.set(x0 + mL * s, y0, x0 + (mL + pageW) * s, y0 + h)
         pageBitmap?.let { canvas.drawBitmap(it, null, r, bmpPaint) }

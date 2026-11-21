@@ -47,6 +47,8 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
     var onPageTap: ((Int) -> Unit)? = null
     var onPageMenu: ((View, Int) -> Unit)? = null
     var onClose: (() -> Unit)? = null
+    /** The + tile after the last page. */
+    var onAddPage: (() -> Unit)? = null
     /** A page was dragged to a new place (the list is already reordered). */
     var onPageMoved: ((Int, Int, Page) -> Unit)? = null
 
@@ -113,7 +115,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
 
     private val reorder = ItemTouchHelper(object : ItemTouchHelper.Callback() {
         override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int =
-            makeMovementFlags(
+            if (vh !is Holder) 0 else makeMovementFlags(
                 ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT, 0,
             )
 
@@ -208,11 +210,11 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
         var h = 17
         for (s in p.strokes) h = h * 31 + System.identityHashCode(s)
         for (im in p.images) h = h * 31 + im.state().hashCode()
-        return "${System.identityHashCode(p)}:${p.strokes.size}:${p.images.size}:$h:${d.leftOf(p)}:${d.rightOf(p)}"
+        return "${System.identityHashCode(p)}:${p.strokes.size}:${p.images.size}:$h:${d.leftOf(p)}:${d.rightOf(p)}:${d.marginPaperOf(p)}"
     }
 
     private class Snap(
-        val file: Int, val src: Int, val w: Int, val h: Int,
+        val file: Int, val src: Int, val w: Int, val h: Int, val paper: Int, val marginPaper: Int,
         val mL: Float, val mR: Float,
         val strokes: List<Stroke>,
         val images: List<Pair<File, ImgState>>,
@@ -221,7 +223,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
     private fun request(d: Doc, p: Page, key: String, tw: Int, th: Int) {
         if (!pending.add(key)) return
         val gen = generation
-        val snap = Snap(p.file, p.src, p.w, p.h, d.leftOf(p), d.rightOf(p), ArrayList(p.strokes),
+        val snap = Snap(p.file, p.src, p.w, p.h, if (p.isBlank) p.paper else PAPER_BLANK, d.marginPaperOf(p), d.leftOf(p), d.rightOf(p), ArrayList(p.strokes),
             p.images.map { File(d.dir, it.file) to it.state() })
         try {
             renderExec.execute {
@@ -272,6 +274,16 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             val c = Canvas(bmp)
             c.scale(sc, sc)
             c.translate(s.mL, 0f)
+            val rule = Paint().apply { color = 0xFFD6D6DA.toInt(); strokeWidth = max(0.5f, 1f / sc) }
+            if (s.paper != PAPER_BLANK) c.drawLines(paperLines(s.paper, s.w.toFloat(), s.h.toFloat()), rule)
+            if (s.marginPaper != PAPER_BLANK) {
+                if (s.mL > 0f) {
+                    c.save(); c.translate(-s.mL, 0f); c.drawLines(paperLines(s.marginPaper, s.mL, s.h.toFloat()), rule); c.restore()
+                }
+                if (s.mR > 0f) {
+                    c.save(); c.translate(s.w.toFloat(), 0f); c.drawLines(paperLines(s.marginPaper, s.mR, s.h.toFloat()), rule); c.restore()
+                }
+            }
             val bp = Paint(Paint.FILTER_BITMAP_FLAG)
             for ((f, st) in s.images) {
                 val ib = Pics.decodeForScreen(f, 400) ?: continue
@@ -317,10 +329,38 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
         var key: String? = null
     }
 
-    private inner class Adapter : RecyclerView.Adapter<Holder>() {
-        override fun getItemCount(): Int = doc?.pageCount ?: 0
+    private inner class AddHolder(root: View) : RecyclerView.ViewHolder(root)
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
+    private inner class Adapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        /** Pages plus a trailing "+" tile. */
+        override fun getItemCount(): Int = doc?.let { it.pageCount + 1 } ?: 0
+
+        override fun getItemViewType(position: Int): Int = if (position == (doc?.pageCount ?: 0)) 1 else 0
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            if (viewType == 1) {
+                val root = FrameLayout(context).apply { setPadding(dp(8), dp(8), dp(8), dp(4)) }
+                val tile = FrameLayout(context).apply {
+                    background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
+                        GradientDrawable().apply {
+                            cornerRadius = dp(6).toFloat()
+                            setStroke(dp(1), 0xFF48484A.toInt(), dp(5).toFloat(), dp(4).toFloat())
+                        }, null)
+                    isClickable = true
+                    contentDescription = "Add page"
+                    setOnClickListener { onAddPage?.invoke() }
+                }
+                tile.addView(ImageView(context).apply {
+                    setImageResource(R.drawable.ic_plus)
+                    imageTintList = ColorStateList.valueOf(0xFF8E8E93.toInt())
+                }, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
+                root.addView(tile, FrameLayout.LayoutParams(thumbW, (thumbW * 1.414f).roundToInt(), Gravity.CENTER_HORIZONTAL))
+                return AddHolder(root)
+            }
+            return createPageHolder()
+        }
+
+        private fun createPageHolder(): Holder {
             val root = LinearLayout(context).apply {
                 orientation = VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -355,7 +395,8 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             return Holder(root, frame, thumb, number, more)
         }
 
-        override fun onBindViewHolder(h: Holder, position: Int) {
+        override fun onBindViewHolder(vh: RecyclerView.ViewHolder, position: Int) {
+            val h = vh as? Holder ?: return
             val d = doc ?: return
             val p = d.pages.getOrNull(position) ?: return
             val fullW = d.leftOf(p) + p.w + d.rightOf(p)

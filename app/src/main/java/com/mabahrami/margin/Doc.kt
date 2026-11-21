@@ -180,10 +180,47 @@ class ImageItem(val file: String, val imgW: Int, val imgH: Int) {
  * A page as the user sees it. [file] indexes Doc.sources, [src] is the page in that file,
  * or src = -1 for a blank page. [w]/[h] are in points.
  */
-class Page(val file: Int, val src: Int, val w: Int, val h: Int) {
-    /** This page's own margins (points), or null to use the document's. */
+const val PAPER_BLANK = 0
+const val PAPER_LINED = 1
+const val PAPER_GRID = 2
+
+/** Spacing (points) of the dim ruling on lined / grid pages. */
+const val RULE_SPACING = 24f
+const val GRID_SPACING = 18f
+
+/**
+ * Dim ruling for an inserted page of [w] x [h] points, as line segments (x0,y0,x1,y1, ...)
+ * in page coordinates (origin top-left).
+ */
+fun paperLines(paper: Int, w: Float, h: Float): FloatArray {
+    val out = ArrayList<Float>()
+    when (paper) {
+        PAPER_LINED -> {
+            var y = RULE_SPACING * 2
+            while (y < h - RULE_SPACING / 2) {
+                out.add(0f); out.add(y); out.add(w); out.add(y)
+                y += RULE_SPACING
+            }
+        }
+        PAPER_GRID -> {
+            var x = GRID_SPACING
+            while (x < w) {
+                out.add(x); out.add(0f); out.add(x); out.add(h); x += GRID_SPACING
+            }
+            var y = GRID_SPACING
+            while (y < h) {
+                out.add(0f); out.add(y); out.add(w); out.add(y); y += GRID_SPACING
+            }
+        }
+    }
+    return out.toFloatArray()
+}
+
+class Page(val file: Int, val src: Int, val w: Int, val h: Int, val paper: Int = PAPER_BLANK) {
+    /** This page's own margins (points) and margin paper, or null to use the document's. */
     var mL: Float? = null
     var mR: Float? = null
+    var mPaper: Int? = null
     val strokes: MutableList<Stroke> = ArrayList()
     val images: MutableList<ImageItem> = ArrayList()
     val isBlank: Boolean get() = src < 0
@@ -192,7 +229,7 @@ class Page(val file: Int, val src: Int, val w: Int, val h: Int) {
 class EraseItem(val page: Page, val index: Int, val stroke: Stroke)
 
 /** A page's own margins, remembered so "all pages" can be undone. */
-class PageOverride(val page: Page, val l: Float?, val r: Float?)
+class PageOverride(val page: Page, val l: Float?, val r: Float?, val paper: Int?)
 
 /** A point on a page (page-local points), e.g. where the user long-pressed. */
 class PlacePoint(val page: Page, val x: Float, val y: Float)
@@ -205,9 +242,13 @@ sealed class Action {
     class Margins(
         val oldL: Float, val oldR: Float, val newL: Float, val newR: Float,
         val cleared: List<PageOverride> = emptyList(),
+        val oldPaper: Int = PAPER_BLANK, val newPaper: Int = PAPER_BLANK,
     ) : Action()
     /** Margins for one page only (null = back to the document's margins). */
-    class PageMargins(val page: Page, val oldL: Float?, val oldR: Float?, val newL: Float?, val newR: Float?) : Action()
+    class PageMargins(
+        val page: Page, val oldL: Float?, val oldR: Float?, val newL: Float?, val newR: Float?,
+        val oldPaper: Int?, val newPaper: Int?,
+    ) : Action()
     class InsertPages(val index: Int, val pages: List<Page>) : Action()
     class DeletePage(val index: Int, val page: Page) : Action()
     class AddImage(val page: Page, val item: ImageItem, val index: Int) : Action()
@@ -245,6 +286,10 @@ class Doc(
     fun leftOf(p: Page): Float = p.mL ?: marginL
     fun rightOf(p: Page): Float = p.mR ?: marginR
 
+    /** Paper in the margin areas (blank / lined / grid). */
+    var marginPaper = PAPER_BLANK
+    fun marginPaperOf(p: Page): Int = p.mPaper ?: marginPaper
+
     /** Where "Save" writes (a content Uri string), or null if never saved. */
     var saveUri: String? = null
     /** The file this tab was opened from (for "Save in place"), if known. */
@@ -271,7 +316,7 @@ class Doc(
 
     val hasContent: Boolean
         get() = marginL > 0f || marginR > 0f || pages.size != sources[0].w.size ||
-            pages.any { it.isBlank || it.file != 0 || it.strokes.isNotEmpty() || it.images.isNotEmpty() || it.mL != null || it.mR != null }
+            pages.any { it.isBlank || it.file != 0 || it.strokes.isNotEmpty() || it.images.isNotEmpty() || it.mL != null || it.mR != null || it.mPaper != null }
 
     /** Records an action that has ALREADY been applied. */
     fun push(a: Action) {
@@ -307,13 +352,13 @@ class Doc(
             is Action.Add -> a.page.strokes.add(a.stroke)
             is Action.Erase -> for (item in a.items) item.page.strokes.remove(item.stroke)
             is Action.Margins -> {
-                marginL = a.newL; marginR = a.newR
+                marginL = a.newL; marginR = a.newR; marginPaper = a.newPaper
                 for (c in a.cleared) {
-                    c.page.mL = null; c.page.mR = null
+                    c.page.mL = null; c.page.mR = null; c.page.mPaper = null
                 }
             }
             is Action.PageMargins -> {
-                a.page.mL = a.newL; a.page.mR = a.newR
+                a.page.mL = a.newL; a.page.mR = a.newR; a.page.mPaper = a.newPaper
             }
             is Action.InsertPages -> pages.addAll(a.index.coerceIn(0, pages.size), a.pages)
             is Action.DeletePage -> pages.remove(a.page)
@@ -341,13 +386,13 @@ class Doc(
                 list.add(item.index.coerceIn(0, list.size), item.stroke)
             }
             is Action.Margins -> {
-                marginL = a.oldL; marginR = a.oldR
+                marginL = a.oldL; marginR = a.oldR; marginPaper = a.oldPaper
                 for (c in a.cleared) {
-                    c.page.mL = c.l; c.page.mR = c.r
+                    c.page.mL = c.l; c.page.mR = c.r; c.page.mPaper = c.paper
                 }
             }
             is Action.PageMargins -> {
-                a.page.mL = a.oldL; a.page.mR = a.oldR
+                a.page.mL = a.oldL; a.page.mR = a.oldR; a.page.mPaper = a.oldPaper
             }
             is Action.InsertPages -> for (p in a.pages) pages.remove(p)
             is Action.DeletePage -> pages.add(a.index.coerceIn(0, pages.size), a.page)

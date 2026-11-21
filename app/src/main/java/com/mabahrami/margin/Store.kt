@@ -127,6 +127,7 @@ object Store {
         sb.append(",\"origin\":").append(JSONObject.quote(d.originUri ?: ""))
         sb.append(",\"mL\":"); num(sb, d.marginL)
         sb.append(",\"mR\":"); num(sb, d.marginR)
+        sb.append(",\"mp\":").append(d.marginPaper)
         sb.append(",\"scale\":"); num(sb, d.scale)
         sb.append(",\"tx\":"); num(sb, d.tx)
         sb.append(",\"ty\":"); num(sb, d.ty)
@@ -143,8 +144,10 @@ object Store {
                 .append(",\"src\":").append(page.src)
                 .append(",\"w\":").append(page.w)
                 .append(",\"h\":").append(page.h)
+            if (page.paper != PAPER_BLANK) sb.append(",\"pp\":").append(page.paper)
             page.mL?.let { sb.append(",\"ml\":"); num(sb, it) }
             page.mR?.let { sb.append(",\"mr\":"); num(sb, it) }
+            page.mPaper?.let { sb.append(",\"mpp\":").append(it) }
             sb.append(",\"s\":")
             strokesJson(sb, page.strokes)
             sb.append(",\"i\":[")
@@ -246,7 +249,7 @@ object Store {
         val name: String?,
         val saveUri: String?,
         val originUri: String?,
-        val mL: Float, val mR: Float,
+        val mL: Float, val mR: Float, val mp: Int,
         val scale: Float, val tx: Float, val ty: Float,
         val unsaved: Boolean,
         val pages: List<Page>,
@@ -254,6 +257,7 @@ object Store {
         fun applyTo(d: Doc) {
             d.marginL = mL.coerceIn(0f, 5000f)
             d.marginR = mR.coerceIn(0f, 5000f)
+            d.marginPaper = mp
             if (scale > 0f && scale.isFinite()) {
                 d.scale = scale; d.tx = tx; d.ty = ty
             }
@@ -300,10 +304,11 @@ object Store {
                 } else {
                     val w = po.optInt("w", 595).coerceIn(10, 20000)
                     val h = po.optInt("h", 842).coerceIn(10, 20000)
-                    Page(0, -1, w, h)
+                    Page(0, -1, w, h, po.optInt("pp", PAPER_BLANK).coerceIn(PAPER_BLANK, PAPER_GRID))
                 }
                 if (po.has("ml")) page.mL = po.optDouble("ml", 0.0).toFloat().coerceIn(0f, 5000f)
                 if (po.has("mr")) page.mR = po.optDouble("mr", 0.0).toFloat().coerceIn(0f, 5000f)
+                if (po.has("mpp")) page.mPaper = po.optInt("mpp", PAPER_BLANK).coerceIn(PAPER_BLANK, PAPER_GRID)
                 parseStrokes(po.optJSONArray("s"), page.strokes)
                 parseImages(po.optJSONArray("i"), page.images)
                 pages.add(page)
@@ -322,6 +327,7 @@ object Store {
             originUri = o.optString("origin").takeIf { it.isNotEmpty() },
             mL = o.optDouble("mL", 0.0).toFloat(),
             mR = o.optDouble("mR", 0.0).toFloat(),
+            mp = o.optInt("mp", PAPER_BLANK).coerceIn(PAPER_BLANK, PAPER_GRID),
             scale = o.optDouble("scale", 0.0).toFloat(),
             tx = o.optDouble("tx", 0.0).toFloat(),
             ty = o.optDouble("ty", 0.0).toFloat(),

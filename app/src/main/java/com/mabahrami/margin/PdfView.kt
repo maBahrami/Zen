@@ -113,6 +113,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     // ---- paints ----
     private val pagePaint = Paint().apply { color = Color.WHITE }
+    private val rulePaint = Paint().apply {
+        color = 0xFFD6D6DA.toInt()
+        strokeWidth = 0.5f
+    }
+    private val ruleCache = HashMap<Long, FloatArray>()
+    /** Cache key for margin ruling (bit 62 keeps it apart from whole-page ruling keys). */
+    private fun ruleKey(paper: Int, w: Float, h: Int): Long =
+        (1L shl 62) xor (paper.toLong() shl 56) xor (h.toLong() shl 32) xor w.toRawBits().toLong().and(0xFFFFFFFFL)
     /** Soft shadow under each page, so it reads as paper on the dark background. */
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private var shadowForScale = -1f
@@ -286,15 +294,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         invalidate()
     }
 
-    fun setMargins(l: Float, r: Float) {
+    fun setMargins(l: Float, r: Float, paper: Int) {
         val d = doc ?: return
-        val overrides = d.pages.filter { it.mL != null || it.mR != null }.map { PageOverride(it, it.mL, it.mR) }
-        if (l == d.marginL && r == d.marginR && overrides.isEmpty()) return
-        val a = Action.Margins(d.marginL, d.marginR, l, r, overrides)
+        val overrides = d.pages.filter { it.mL != null || it.mR != null || it.mPaper != null }
+            .map { PageOverride(it, it.mL, it.mR, it.mPaper) }
+        if (l == d.marginL && r == d.marginR && paper == d.marginPaper && overrides.isEmpty()) return
+        val a = Action.Margins(d.marginL, d.marginR, l, r, overrides, d.marginPaper, paper)
         d.marginL = l
         d.marginR = r
+        d.marginPaper = paper
         for (o in overrides) {
-            o.page.mL = null; o.page.mR = null
+            o.page.mL = null; o.page.mR = null; o.page.mPaper = null
         }
         d.push(a)
         afterLayoutChange(d)
@@ -302,13 +312,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     /** Margins for one page only. */
-    fun setPageMargins(index: Int, l: Float, r: Float) {
+    fun setPageMargins(index: Int, l: Float, r: Float, paper: Int) {
         val d = doc ?: return
         val page = d.pages.getOrNull(index) ?: return
-        if (page.mL == l && page.mR == r) return
-        val a = Action.PageMargins(page, page.mL, page.mR, l, r)
+        if (page.mL == l && page.mR == r && page.mPaper == paper) return
+        val a = Action.PageMargins(page, page.mL, page.mR, l, r, page.mPaper, paper)
         page.mL = l
         page.mR = r
+        page.mPaper = paper
         d.push(a)
         afterLayoutChange(d)
         onChange?.invoke(d)
@@ -335,12 +346,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         invalidate()
     }
 
-    /** Inserts a blank page (same size as its neighbour) at [index]. */
-    fun insertBlankPage(index: Int) {
+    /** Inserts a new page of [w] x [h] points with the given paper at [index]. */
+    fun insertBlankPage(index: Int, w: Int, h: Int, paper: Int) {
         val d = doc ?: return
         val at = index.coerceIn(0, d.pageCount)
-        val ref = d.pages.getOrNull(if (at > 0) at - 1 else 0)
-        insertPages(at, listOf(Page(0, -1, ref?.w ?: 595, ref?.h ?: 842)))
+        insertPages(at, listOf(Page(0, -1, w, h, paper)))
     }
 
     fun insertPages(index: Int, pages: List<Page>) {
@@ -618,6 +628,25 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             canvas.save()
             canvas.clipRect(left, top, right, bottom)
             canvas.translate(ox, top)
+            val mp = d.marginPaperOf(page)
+            if (mp != PAPER_BLANK) {
+                // dim ruling in the margin areas
+                if (pl > 0f) {
+                    canvas.save(); canvas.translate(-pl, 0f)
+                    canvas.drawLines(ruleCache.getOrPut(ruleKey(mp, pl, page.h)) { paperLines(mp, pl, page.h.toFloat()) }, rulePaint)
+                    canvas.restore()
+                }
+                if (pr > 0f) {
+                    canvas.save(); canvas.translate(page.w.toFloat(), 0f)
+                    canvas.drawLines(ruleCache.getOrPut(ruleKey(mp, pr, page.h)) { paperLines(mp, pr, page.h.toFloat()) }, rulePaint)
+                    canvas.restore()
+                }
+            }
+            if (page.isBlank && page.paper != PAPER_BLANK) {
+                val key = (page.paper.toLong() shl 40) or (page.w.toLong() shl 20) or page.h.toLong()
+                val lines = ruleCache.getOrPut(key) { paperLines(page.paper, page.w.toFloat(), page.h.toFloat()) }
+                canvas.drawLines(lines, rulePaint)
+            }
             for (im in page.images) {
                 if (mode == MODE_IMG_MOVE && im === selItem) continue
                 drawImage(d, canvas, im)

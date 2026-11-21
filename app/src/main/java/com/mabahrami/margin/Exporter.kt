@@ -53,6 +53,9 @@ object Exporter {
     class PageSnap(
         val file: Int, val src: Int, val w: Int, val h: Int,
         val strokes: List<Stroke>, val images: List<ImgSnap>,
+        val paper: Int,
+        /** Paper in the margin areas. */
+        val marginPaper: Int,
         /** This page's effective margins (its own, or the document's). */
         val mL: Float, val mR: Float,
     )
@@ -72,7 +75,7 @@ object Exporter {
         val pages = d.pages.map { p ->
             PageSnap(p.file, p.src, p.w, p.h, ArrayList(p.strokes), p.images.map {
                 ImgSnap(File(d.dir, it.file), it.x, it.y, it.w, it.h, it.cl, it.ct, it.cr, it.cb)
-            }, d.leftOf(p), d.rightOf(p))
+            }, if (p.isBlank) p.paper else PAPER_BLANK, d.marginPaperOf(p), d.leftOf(p), d.rightOf(p))
         }
         val files = ArrayList<Pair<String, File>>()
         if (withEditData) {
@@ -274,15 +277,52 @@ object Exporter {
         val mL = p.mL
         val mR = p.mR
         val page = PDPage(PDRectangle(mL + p.w + mR, p.h.toFloat()))
-        if (p.strokes.isNotEmpty() || p.images.isNotEmpty()) {
+        val rules = paperLines(p.paper, p.w.toFloat(), p.h.toFloat())
+        if (p.strokes.isNotEmpty() || p.images.isNotEmpty() || rules.isNotEmpty() ||
+            (p.marginPaper != PAPER_BLANK && (p.mL > 0f || p.mR > 0f))) {
             PDPageContentStream(doc, page).use { cs ->
                 cs.saveGraphicsState()
                 cs.transform(Matrix(1f, 0f, 0f, -1f, mL, p.h.toFloat()))
+                drawMarginRules(cs, p)
+                if (rules.isNotEmpty()) {
+                    // dim ruling, under everything else
+                    cs.setStrokingColor(PDColor(floatArrayOf(0.82f, 0.82f, 0.84f), PDDeviceRGB.INSTANCE))
+                    cs.setLineWidth(0.5f)
+                    var k = 0
+                    while (k + 3 < rules.size) {
+                        cs.moveTo(rules[k], rules[k + 1]); cs.lineTo(rules[k + 2], rules[k + 3])
+                        k += 4
+                    }
+                    cs.stroke()
+                }
                 drawOverlay(doc, cs, p, images)
                 cs.restoreGraphicsState()
             }
         }
         return page
+    }
+
+    /** Dim ruling in the margin areas only (page-local visual coordinates). */
+    private fun drawMarginRules(cs: PDPageContentStream, p: PageSnap) {
+        if (p.marginPaper == PAPER_BLANK) return
+        val h = p.h.toFloat()
+        val parts = ArrayList<Pair<Float, FloatArray>>()
+        if (p.mL > 0f) parts.add(-p.mL to paperLines(p.marginPaper, p.mL, h))
+        if (p.mR > 0f) parts.add(p.w.toFloat() to paperLines(p.marginPaper, p.mR, h))
+        if (parts.all { it.second.isEmpty() }) return
+        cs.saveGraphicsState()
+        cs.setStrokingColor(PDColor(floatArrayOf(0.82f, 0.82f, 0.84f), PDDeviceRGB.INSTANCE))
+        cs.setLineWidth(0.5f)
+        cs.setLineDashPattern(FloatArray(0), 0f)
+        for ((x0, lines) in parts) {
+            var k = 0
+            while (k + 3 < lines.size) {
+                cs.moveTo(x0 + lines[k], lines[k + 1]); cs.lineTo(x0 + lines[k + 2], lines[k + 3])
+                k += 4
+            }
+        }
+        cs.stroke()
+        cs.restoreGraphicsState()
     }
 
     /** Draws images then strokes, in page-local "visual" coordinates (y down). */
@@ -357,7 +397,8 @@ object Exporter {
         val sy = visH / p.h
         val mL = p.mL * sx
         val mR = p.mR * sx
-        val hasOverlay = p.strokes.isNotEmpty() || p.images.isNotEmpty()
+        val marginRules = p.marginPaper != PAPER_BLANK && (p.mL > 0f || p.mR > 0f)
+        val hasOverlay = p.strokes.isNotEmpty() || p.images.isNotEmpty() || marginRules
         val widen = mL > 0f || mR > 0f
         if (!widen && !hasOverlay) return
 
@@ -377,6 +418,7 @@ object Exporter {
                 // Map "visual" coordinates (origin top-left of the page as displayed, y down) to PDF user space.
                 cs.transform(visualToUser(rot, llx, lly, urx, ury))
                 cs.transform(Matrix.getScaleInstance(sx, sy))
+                drawMarginRules(cs, p)
                 drawOverlay(doc, cs, p, images)
                 cs.restoreGraphicsState()
             }
