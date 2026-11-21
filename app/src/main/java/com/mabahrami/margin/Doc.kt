@@ -362,6 +362,9 @@ class Doc(
     /** Size and paper of the blank page added most recently (w, h, paper), or null if none was added yet. */
     var lastAdded: IntArray? = null
 
+    /** Zoom fixed: pinching only moves the pages, it doesn't zoom (display only, like dark view). */
+    var zoomLocked = false
+
     /** Dark view (display only: never changes what Save or Export writes). */
     var dark = false
 

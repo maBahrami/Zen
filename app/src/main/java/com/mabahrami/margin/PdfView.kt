@@ -38,7 +38,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     companion object {
         private const val GAP = 16f                 // points between pages
-        private const val MAX_SCALE = 8f
+        /** Closest zoom (px per point): about 7x the page width on the Tab S9+. */
+        private const val MAX_SCALE = 32f
+        /** Memory for the sharp close-up renders of the visible part of zoomed-in pages. */
+        private const val DETAIL_BYTES = 80 * 1024 * 1024
         private const val CACHE_BYTES = 256 * 1024 * 1024
         private const val IMG_CACHE_BYTES = 96 * 1024 * 1024
         private const val MAX_BITMAP_SIDE = 4096
@@ -54,11 +57,20 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         private const val MODE_LASSO = 6
         private const val MODE_SEL_MOVE = 7
         private const val MODE_SEL_SCALE = 8
+        /** Dragging the fast-scroll handle on the right edge. */
+        private const val MODE_FAST = 9
+
+        const val FAST_RIGHT = 0
+        const val FAST_LEFT = 1
+        const val FAST_BOTH = 2
         /** Straight highlighter snaps to horizontal/vertical within this many degrees. */
         private const val MAGNET_DEG = 1.5
     }
 
     var onChange: ((Doc) -> Unit)? = null
+    /** Someone pinched while the zoom is fixed. */
+    var onZoomLocked: (() -> Unit)? = null
+    private var zoomLockHinted = false
     /** A finger or pen just touched this view (side by side: makes it the active side before anything else). */
     var onTouchStart: ((PdfView) -> Unit)? = null
     /** Side by side: draw a thin blue outline to mark this as the active side. */
@@ -69,6 +81,160 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 invalidate()
             }
         }
+    // ---- fast scroll: a handle on the right edge, shown while scrolling; drag it to move through pages fast ----
+    /** Where the fast-scroll handle is: [FAST_RIGHT], [FAST_LEFT] or [FAST_BOTH] (one on each edge). */
+    var fastSide = FAST_RIGHT
+        set(v) {
+            if (field != v) {
+                field = v
+                invalidate()
+            }
+        }
+    /** The handle was tapped (not dragged): view x / y of the tap, e.g. to offer moving it to the other side. */
+    var onFastScrollTap: ((Float, Float) -> Unit)? = null
+    private var fastDownX = 0f
+    private var fastDownY = 0f
+    private var fastDownAt = 0L
+    private var fastMoved = false
+    /** The handle being dragged is the left one. */
+    private var fastDragLeft = false
+
+    /** Shows the handle for a moment (e.g. after moving it to the other side). */
+    fun flashFastScroll() {
+        lastScrollAt = SystemClock.uptimeMillis()
+        invalidate()
+    }
+
+    private var lastDrawTy = Float.NaN
+    private var lastScrollAt = 0L
+    private var fastDragOffset = 0f
+    private val fastShowMs = 1300L
+    private val fastFadeMs = 250L
+    // (getters: these fields come before `density` is set)
+    private val fastThumbH: Float get() = 46f * density
+    private val fastThumbW: Float get() = 6f * density
+    private val fastGrabW: Float get() = 40f * density
+    private val fastRect = RectF()
+    private val fastPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val fastTrackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val fastBubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xEB1C1C1E.toInt() }
+    private val fastTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+    }
+
+    /** The document is long enough to need it. */
+    private fun fastScrollUseful(d: Doc): Boolean = contentH * d.scale > height * 1.6f
+
+    private fun fastTrackTop() = topPx + 4f * density
+    private fun fastTrackBottom() = height - 12f * density
+
+    /** Scroll position as 0 (top) .. 1 (bottom). */
+    private fun scrollFraction(d: Doc): Float {
+        val maxTy = topPx
+        val minTy = height - contentH * d.scale - edgePx
+        if (minTy >= maxTy) return 0f
+        return ((maxTy - d.ty) / (maxTy - minTy)).coerceIn(0f, 1f)
+    }
+
+    /** Handle position (its top, in px) for the current scroll. */
+    private fun fastThumbTop(d: Doc): Float =
+        fastTrackTop() + (fastTrackBottom() - fastTrackTop() - fastThumbH) * scrollFraction(d)
+
+    /** How visible the handle is now (0..1): fully while dragging, then it fades a moment after scrolling stops. */
+    private fun fastAlpha(): Float {
+        if (mode == MODE_FAST) return 1f
+        val idle = SystemClock.uptimeMillis() - lastScrollAt
+        return when {
+            idle < fastShowMs -> 1f
+            idle < fastShowMs + fastFadeMs -> 1f - (idle - fastShowMs).toFloat() / fastFadeMs
+            else -> 0f
+        }
+    }
+
+    /** A touch on the visible handle (generously wide) starts dragging it. */
+    private fun tryGrabFast(d: Doc, x: Float, y: Float): Boolean {
+        if (!fastScrollUseful(d) || fastAlpha() <= 0.1f) return false
+        val onLeft = fastSide != FAST_RIGHT && x <= fastGrabW
+        val onRight = fastSide != FAST_LEFT && x >= width - fastGrabW
+        if (!onLeft && !onRight) return false
+        fastDragLeft = onLeft
+        val top = fastThumbTop(d)
+        if (y < top - 16f * density || y > top + fastThumbH + 16f * density) return false
+        fastDragOffset = y - top
+        fastDownX = x
+        fastDownY = y
+        fastDownAt = SystemClock.uptimeMillis()
+        fastMoved = false
+        mode = MODE_FAST
+        parent?.requestDisallowInterceptTouchEvent(true)
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        invalidate()
+        return true
+    }
+
+    private fun dragFast(d: Doc, y: Float) {
+        val span = fastTrackBottom() - fastTrackTop() - fastThumbH
+        if (span <= 0f) return
+        val f = ((y - fastDragOffset - fastTrackTop()) / span).coerceIn(0f, 1f)
+        val maxTy = topPx
+        val minTy = height - contentH * d.scale - edgePx
+        d.ty = maxTy + (minTy - maxTy) * f
+        clamp(d)
+        lastScrollAt = SystemClock.uptimeMillis()
+        invalidate()
+    }
+
+    private fun drawFastScroll(d: Doc, canvas: Canvas) {
+        if (!d.ty.isNaN() && d.ty != lastDrawTy) {
+            if (!lastDrawTy.isNaN()) lastScrollAt = SystemClock.uptimeMillis()
+            lastDrawTy = d.ty
+        }
+        if (!fastScrollUseful(d)) return
+        val a = fastAlpha()
+        if (a <= 0f) return
+        val dragging = mode == MODE_FAST
+        val dark = d.dark
+        val top = fastThumbTop(d)
+        for (left in booleanArrayOf(true, false)) {
+            if (left && fastSide == FAST_RIGHT || !left && fastSide == FAST_LEFT) continue
+            val active = dragging && fastDragLeft == left
+            val w = if (active) fastThumbW * 1.6f else fastThumbW
+            val x = if (left) 8f * density else width - 8f * density - w
+            // faint track while dragging, so the whole document's length is visible
+            if (active) {
+                fastTrackPaint.color = if (dark) 0x1FFFFFFF else 0x14000000
+                fastRect.set(x, fastTrackTop(), x + w, fastTrackBottom())
+                canvas.drawRoundRect(fastRect, w / 2f, w / 2f, fastTrackPaint)
+            }
+            fastPaint.color = if (active) 0xFF0A84FF.toInt() else if (dark) 0xB3FFFFFF.toInt() else 0x8C000000.toInt()
+            fastPaint.alpha = (Color.alpha(fastPaint.color) * a).toInt()
+            fastRect.set(x, top, x + w, top + fastThumbH)
+            canvas.drawRoundRect(fastRect, w / 2f, w / 2f, fastPaint)
+            if (active) {
+                // page number beside the handle being dragged, towards the middle of the view
+                val n = currentPageIndex() + 1
+                val label = "$n / ${d.pageCount}"
+                fastTextPaint.textSize = 14f * density
+                val tw = fastTextPaint.measureText(label)
+                val bw = tw + 24f * density
+                val bh = 30f * density
+                val cy = top + fastThumbH / 2f
+                if (left) fastRect.set(x + w + 14f * density, cy - bh / 2f, x + w + 14f * density + bw, cy + bh / 2f)
+                else fastRect.set(x - 14f * density - bw, cy - bh / 2f, x - 14f * density, cy + bh / 2f)
+                canvas.drawRoundRect(fastRect, bh / 2f, bh / 2f, fastBubblePaint)
+                canvas.drawText(label, fastRect.centerX(), cy + fastTextPaint.textSize * 0.35f, fastTextPaint)
+            }
+        }
+        if (dragging) {
+            // fully shown while dragging
+        } else if (a < 1f || SystemClock.uptimeMillis() - lastScrollAt < fastShowMs + fastFadeMs) {
+            // keep redrawing until it has faded away
+            postInvalidateDelayed(if (a < 1f) 16L else fastShowMs + 5 - (SystemClock.uptimeMillis() - lastScrollAt).coerceAtMost(fastShowMs))
+        }
+    }
+
     // ---- eraser circle: shows what the eraser covers, while erasing (and while the pen hovers in eraser mode) ----
     private var eraserVisible = false
     private var eraserX = 0f
@@ -111,7 +277,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
      * Pulled past the end and held: the user wants a new page. [atStart] = pulled down at the first page
      * (new page before it); false = pulled up at the last page (new page at the end).
      */
-    var onPullAddPage: ((atStart: Boolean) -> Unit)? = null
+    var onPullAddPage: ((atStart: Boolean, plusX: Float, plusY: Float) -> Unit)? = null
+    /** Where the "+" of the pull indicator was last drawn (view px), so the page window can grow out of it. */
+    private var pullPlusX = 0f
+    private var pullPlusY = 0f
     /** Called when the selected image changes (null = nothing selected). */
     var onSelection: ((ImageItem?) -> Unit)? = null
     /** The page in the middle of the screen changed (for the page overview). */
@@ -193,6 +362,16 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
     private val pending = HashSet<Int>()
     private var generation = 0
+
+    // ---- close-ups: a whole page can only be rendered up to MAX_BITMAP_SIDE px, so when zoomed in further
+    // the visible part of each page is rendered separately at the exact zoom and drawn over it ----
+    private class Detail(val bmp: Bitmap, val scale: Float, val l: Float, val t: Float, val r: Float, val b: Float)
+
+    private val detailCache = object : LruCache<Int, Detail>(DETAIL_BYTES) {
+        override fun sizeOf(key: Int, value: Detail): Int = value.bmp.byteCount
+    }
+    private val detailPending = HashSet<Int>()
+    private val detailDst = RectF()
 
     /** Cache key of a page's bitmap; light and dark versions are cached separately. */
     private fun pageKey(p: Page, dark: Boolean) = (p.file * 100_000 + p.src) * 2 + (if (dark) 1 else 0)
@@ -386,6 +565,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(det: ScaleGestureDetector): Boolean {
                 val d = doc ?: return false
+                if (d.zoomLocked) {
+                    // zoom is fixed: two fingers just move the pages (say so once per gesture)
+                    if (!zoomLockHinted && abs(det.scaleFactor - 1f) > 0.04f) {
+                        zoomLockHinted = true
+                        onZoomLocked?.invoke()
+                    }
+                    return false // keep measuring from the start, so the hint needs a real pinch
+                }
                 val ns = (d.scale * det.scaleFactor).coerceIn(minScale(), MAX_SCALE)
                 val f = ns / d.scale
                 d.tx = det.focusX - (det.focusX - d.tx) * f
@@ -399,6 +586,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     fun setDoc(d: Doc?) {
         resetPull(animate = false)
+        lastDrawTy = Float.NaN
+        lastScrollAt = 0L
         cancelLive()
         erased.clear()
         removeCallbacks(longPress)
@@ -410,6 +599,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         velocity = null
         cache.evictAll()
         pending.clear()
+        detailCache.evictAll()
+        detailPending.clear()
         imgCache.evictAll()
         imgPending.clear()
         generation++
@@ -954,6 +1145,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     fun trimCache() {
         cache.evictAll()
+        detailCache.evictAll()
         imgCache.evictAll()
     }
 
@@ -1002,8 +1194,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         invalidate()
     }
 
+    /** Farthest zoom: the widest page fills 15% of the view (many pages at once). */
     private fun minScale(): Float =
-        if (width == 0 || contentW <= 0f) 0.05f else max(0.05f, width / contentW * 0.5f)
+        if (width == 0 || contentW <= 0f) 0.05f else max(0.05f, width / contentW * 0.15f)
 
     private fun ensureViewport(d: Doc) {
         if (d.scale > 0f || width == 0 || contentW <= 0f) return
@@ -1131,6 +1324,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 else cache.get(pageKey(page, !dk))?.let { canvas.drawBitmap(it.bmp, null, dst, flipPaint) }
                 val want = bucketFor(page, s)
                 if (pb == null || (!interacting && abs(pb.scale - want) > 0.01f)) requestRender(d, page, want)
+                if (s > want * 1.05f) drawDetail(d, canvas, page, i, ox, top, s, dk)
                 if (hasMargins) {
                     // dim dashed outline of the original page
                     edgePath.reset()
@@ -1225,6 +1419,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             lastReportedPage = cur
             onCurrentPage?.invoke(cur)
         }
+        drawFastScroll(d, canvas)
         if (eraserVisible) {
             // soft disc with a thin ring, readable on light and dark paper
             val dark = doc?.dark == true
@@ -1448,6 +1643,87 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
     }
 
+    /**
+     * Zoomed in beyond what a whole-page render can show sharply: draws (and when the view is still,
+     * requests) a render of just the visible part of the page at the current zoom.
+     */
+    private fun drawDetail(d: Doc, canvas: Canvas, page: Page, i: Int, ox: Float, top: Float, s: Float, dk: Boolean) {
+        // visible part of the page, in page points (a little extra around it for small moves)
+        val vl = ((-d.tx) / s - ox).coerceIn(0f, page.w.toFloat())
+        val vt = ((-d.ty) / s - top).coerceIn(0f, page.h.toFloat())
+        val vr = ((width - d.tx) / s - ox).coerceIn(0f, page.w.toFloat())
+        val vb = ((height - d.ty) / s - top).coerceIn(0f, page.h.toFloat())
+        if (vr <= vl || vb <= vt) return
+        val key = pageKey(page, dk)
+        val det = detailCache.get(key)
+        if (det != null && !det.bmp.isRecycled) {
+            detailDst.set(ox + det.l, top + det.t, ox + det.r, top + det.b)
+            canvas.drawBitmap(det.bmp, null, detailDst, bmpPaint)
+        }
+        val fresh = det != null && abs(det.scale - s) < 0.01f &&
+            det.l <= vl + 0.5f && det.t <= vt + 0.5f && det.r >= vr - 0.5f && det.b >= vb - 0.5f
+        if (fresh || interacting || page.src < 0) return
+        val padX = (vr - vl) * 0.15f
+        val padY = (vb - vt) * 0.15f
+        requestDetail(d, page, s, dk,
+            (vl - padX).coerceAtLeast(0f), (vt - padY).coerceAtLeast(0f),
+            (vr + padX).coerceAtMost(page.w.toFloat()), (vb + padY).coerceAtMost(page.h.toFloat()))
+    }
+
+    private fun requestDetail(d: Doc, page: Page, s: Float, dark: Boolean, l: Float, t: Float, r: Float, b: Float) {
+        val key = pageKey(page, dark)
+        if (!detailPending.add(key)) return
+        val gen = generation
+        val w = ((r - l) * s).toInt().coerceIn(1, 6000)
+        val h = ((b - t) * s).toInt().coerceIn(1, 6000)
+        val file = page.file
+        val src = page.src
+        val pw = page.w
+        val ph = page.h
+        try {
+            renderExec.execute {
+                val bmp: Bitmap? = if (d.closed) null else try {
+                    val rnd = d.sources.getOrNull(file)?.renderer
+                    if (rnd == null) null else {
+                        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        out.eraseColor(Color.WHITE)
+                        val pg = rnd.openPage(src)
+                        try {
+                            val m = Matrix()
+                            m.setScale(s * pw / pg.width, s * ph / pg.height)
+                            m.postTranslate(-l * s, -t * s)
+                            pg.render(out, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        } finally {
+                            pg.close()
+                        }
+                        if (dark) {
+                            try {
+                                val keep = photoRectsOf(d, file, src, pw, ph).map {
+                                    RectF((it.left - l) * s, (it.top - t) * s, (it.right - l) * s, (it.bottom - t) * s)
+                                }
+                                Dark.process(out, keep)
+                            } catch (ignored: Throwable) {
+                            }
+                        }
+                        out
+                    }
+                } catch (t2: Throwable) {
+                    null // out of memory etc.: the page just stays at its normal sharpness
+                }
+                post {
+                    detailPending.remove(key)
+                    if (gen != generation) return@post
+                    if (bmp != null) {
+                        detailCache.put(key, Detail(bmp, s, l, t, r, b))
+                        invalidate()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            detailPending.remove(key)
+        }
+    }
+
     /** Runs on the render thread. */
     private fun renderPage(d: Doc, file: Int, src: Int, w: Int, h: Int): Bitmap? {
         if (d.closed) return null
@@ -1668,7 +1944,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 movedPastSlop = false
                 downX = e.x; downY = e.y
                 downTime = SystemClock.uptimeMillis()
-                if (tryGrabLasso(d, e, 0)) {
+                zoomLockHinted = false
+                if (tryGrabFast(d, e.x, e.y)) {
+                    // dragging the fast-scroll handle
+                } else if (tryGrabLasso(d, e, 0)) {
                     // moving / scaling the lasso selection
                 } else if (lassoMode && isPen(e, 0)) {
                     beginLasso(d, e, 0)
@@ -1752,6 +2031,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
                 MODE_SEL_MOVE, MODE_SEL_SCALE -> dragLasso(d, e)
 
+                MODE_FAST -> {
+                    // a tap stays a tap; only a real drag moves the document
+                    if (!fastMoved && hypot(e.x - fastDownX, e.y - fastDownY) > touchSlop) fastMoved = true
+                    if (fastMoved) dragFast(d, e.y)
+                }
+
                 MODE_NAV -> {
                     if (!movedPastSlop && hypot(e.x - downX, e.y - downY) > touchSlop) {
                         movedPastSlop = true
@@ -1812,6 +2097,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     MODE_IMG_MOVE, MODE_IMG_RESIZE -> finishDrag(d)
                     MODE_LASSO -> finishLasso()
                     MODE_SEL_MOVE, MODE_SEL_SCALE -> finishLassoDrag(d)
+                    MODE_FAST -> {
+                        lastScrollAt = SystemClock.uptimeMillis() // stays a moment, then fades
+                        invalidate()
+                        if (!fastMoved && SystemClock.uptimeMillis() - fastDownAt < longPressMs) onFastScrollTap?.invoke(e.x, e.y)
+                    }
                     MODE_NAV -> {
                         scaleDetector.onTouchEvent(e)
                         val vt = velocity
@@ -1846,6 +2136,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     MODE_IMG_MOVE, MODE_IMG_RESIZE -> finishDrag(d)
                     MODE_LASSO -> clearLasso()
                     MODE_SEL_MOVE, MODE_SEL_SCALE -> finishLassoDrag(d)
+                    MODE_FAST -> {
+                        lastScrollAt = SystemClock.uptimeMillis() // stays a moment, then fades
+                        invalidate()
+                    }
                     MODE_NAV -> {
                         velocity?.recycle(); velocity = null
                         interacting = false
@@ -2129,7 +2423,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         pullDone = true // one page per pull; lift the finger to pull again
         vibrate(40L, 220) // firmer buzz: the page window opens
         resetPull(animate = true)
-        onPullAddPage?.invoke(pullDir < 0)
+        onPullAddPage?.invoke(pullDir < 0, pullPlusX, pullPlusY)
     }
 
     /** Short vibration ([amplitude] 1..255; ignored where the motor can't vary it). Never throws. */
@@ -2160,6 +2454,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val cx = if (atTop) width / 2f - 70f * density else width / 2f
         val cy = if (atTop) topPx + off / 2f + 4f * density else height - off / 2f - 8f * density
         if (cy + r < 0f || cy - r > height) return
+        pullPlusX = cx
+        pullPlusY = cy
         val alpha = (frac * 255).toInt()
         pullCirclePaint.alpha = alpha
         canvas.drawCircle(cx, cy, r, pullCirclePaint)

@@ -119,6 +119,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var pressAnchor: View
     private lateinit var pagesPanel: PagesPanel
     private lateinit var pageBadge: TextView
+    /** Magnifier next to the page counter: tap to lock / unlock the zoom of the file. */
+    private lateinit var zoomBtn: ImageView
     /** "Closed … · Undo" bar shown for a few seconds after a tab is closed. */
     private lateinit var undoBar: LinearLayout
     private lateinit var undoText: TextView
@@ -303,9 +305,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        v.onPullAddPage = { atStart ->
-            if (v === pdfView) active?.let { askNewPage(if (atStart) 0 else it.pageCount, likeDoc = true) }
+        v.onPullAddPage = { atStart, plusX, plusY ->
+            if (v === pdfView) active?.let {
+                // the New page window grows out of the "+" (not out of where the finger first touched)
+                val loc = IntArray(2)
+                v.getLocationOnScreen(loc)
+                lastTouchX = loc[0] + plusX
+                lastTouchY = loc[1] + plusY
+                askNewPage(if (atStart) 0 else it.pageCount, likeDoc = true)
+            }
         }
+        // (older versions only had left / right)
+        v.fastSide = prefs.getInt("fast_side", if (prefs.getBoolean("fast_left", false)) PdfView.FAST_LEFT else PdfView.FAST_RIGHT)
+        v.onFastScrollTap = { x, y -> if (v === pdfView) showFastScrollMenu(v, x, y) }
+        v.onZoomLocked = { if (v === pdfView) toast("Zoom is locked · tap the magnifier to unlock") }
         v.onCurrentPage = { i ->
             if (v === pdfView) {
                 if (pagesPanel.visibility == View.VISIBLE) pagesPanel.setCurrent(i)
@@ -313,6 +326,24 @@ class MainActivity : ComponentActivity() {
             }
         }
         return v
+    }
+
+    /** Tap on the fast-scroll handle: offer to move it to the other side of the window. */
+    private fun showFastScrollMenu(v: PdfView, x: Float, y: Float) {
+        pressAnchor.translationX = v.left + x
+        pressAnchor.translationY = y
+        val side = v.fastSide
+        fun choose(newSide: Int) {
+            prefs.edit().putInt("fast_side", newSide).remove("fast_left").apply()
+            paneA.fastSide = newSide
+            paneB.fastSide = newSide
+            pdfView.flashFastScroll() // show it in its new place
+        }
+        val items = ArrayList<GItem>()
+        if (side != PdfView.FAST_LEFT) items.add(GItem("Scroll bar on the left side") { choose(PdfView.FAST_LEFT) })
+        if (side != PdfView.FAST_RIGHT) items.add(GItem("Scroll bar on the right side") { choose(PdfView.FAST_RIGHT) })
+        if (side != PdfView.FAST_BOTH) items.add(GItem("Scroll bar on both sides") { choose(PdfView.FAST_BOTH) })
+        showGenieMenu(pressAnchor, items)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -669,7 +700,26 @@ class MainActivity : ComponentActivity() {
             background = rounded(0x661C1C1E, 12)
             visibility = View.GONE
         }
-        stage.addView(pageBadge, FrameLayout.LayoutParams(
+        // bottom right: zoom lock (magnifier) · page counter
+        zoomBtn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_zoom)
+            imageTintList = ColorStateList.valueOf(0x99FFFFFF.toInt())
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), oval(0x661C1C1E), null)
+            contentDescription = "Lock zoom"
+            tooltipText = "Lock zoom"
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener { active?.let { setZoomLocked(it, !it.zoomLocked) } }
+        }
+        val badgeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        badgeRow.addView(zoomBtn, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(6) })
+        badgeRow.addView(pageBadge)
+        stage.addView(badgeRow, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.END,
         ).apply { setMargins(0, 0, dp(14), dp(14)) })
@@ -1290,6 +1340,15 @@ class MainActivity : ComponentActivity() {
 
         fun showAsDropDown(anchor: View, xoff: Int, yoff: Int) {
             if (!anchor.isAttachedToWindow) return
+            // measure first: with a known size Android can open it above the anchor when there's no room below
+            // (otherwise a popup near the bottom of the screen ends up off-screen)
+            val dm = resources.displayMetrics
+            genie.measure(
+                View.MeasureSpec.makeMeasureSpec(dm.widthPixels, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(dm.heightPixels, View.MeasureSpec.AT_MOST),
+            )
+            window.width = genie.measuredWidth
+            window.height = genie.measuredHeight
             try {
                 window.showAsDropDown(anchor, xoff - dp(10), yoff - dp(4)) // the padding keeps the content where it was
             } catch (e: Exception) {
@@ -1742,10 +1801,26 @@ class MainActivity : ComponentActivity() {
         val d = active
         if (d == null || d.pageCount == 0) {
             pageBadge.visibility = View.GONE
+            zoomBtn.visibility = View.GONE
             return
         }
+        // the magnifier: blue with a lock while the zoom is fixed
+        zoomBtn.setImageResource(if (d.zoomLocked) R.drawable.ic_zoom_locked else R.drawable.ic_zoom)
+        zoomBtn.imageTintList = ColorStateList.valueOf(if (d.zoomLocked) ACCENT else 0x99FFFFFF.toInt())
+        val zd = if (d.zoomLocked) "Unlock zoom" else "Lock zoom"
+        zoomBtn.contentDescription = zd
+        zoomBtn.tooltipText = zd
+        zoomBtn.visibility = View.VISIBLE
         pageBadge.text = "${current.coerceIn(0, d.pageCount - 1) + 1} / ${d.pageCount}"
         pageBadge.visibility = View.VISIBLE
+    }
+
+    private fun setZoomLocked(d: Doc, on: Boolean) {
+        if (!docs.contains(d)) return
+        d.zoomLocked = on
+        markDirty(d) // remembered with the file's view (not written into saved PDFs)
+        updatePageBadge()
+        toast(if (on) "Zoom locked" else "Zoom unlocked")
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
@@ -2473,6 +2548,7 @@ class MainActivity : ComponentActivity() {
             excludeTarget(selBar, true)
             excludeTarget(lassoBar, true)
             excludeTarget(pageBadge, true)
+            excludeTarget(zoomBtn, true)
             swapBtn?.let { excludeTarget(it, true) }
         }
         try {

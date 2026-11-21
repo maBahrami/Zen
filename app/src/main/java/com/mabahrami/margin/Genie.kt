@@ -116,14 +116,18 @@ class GenieLayout(context: Context) : FrameLayout(context) {
             return
         }
         val t = progress
-        // the funnel starts at the source's bottom edge, kept inside this layout (the popup's own window)
-        val sy = src.bottom.coerceIn(0f, dst.top)
-        val down = smooth(t / 0.7f)                       // how far the content has poured down
+        // the source may be above the popup (it drops down) or below it (it opened upwards);
+        // the funnel starts at the source's edge, kept inside this layout (the popup's own window)
+        val below = src.centerY() > dst.centerY()
+        val sy = if (below) src.top.coerceIn(dst.bottom, height.toFloat().coerceAtLeast(dst.bottom))
+        else src.bottom.coerceIn(0f, dst.top)
+        val down = smooth(t / 0.7f)                       // how far the content has poured out
         var k = 0
         for (j in 0..MESH_H) {
-            val v = j.toFloat() / MESH_H                   // 0 = edge near the tab, 1 = far edge
-            // rows far from the tab widen first; rows near it stay narrow (the funnel) until the end
-            val wide = smooth((t - (1f - v) * 0.45f) / 0.55f)
+            val v = j.toFloat() / MESH_H                   // row: 0 = top, 1 = bottom
+            val dist = if (below) 1f - v else v            // 0 = the edge nearest the source
+            // rows far from the source widen first; rows near it stay narrow (the funnel) until the end
+            val wide = smooth((t - (1f - dist) * 0.45f) / 0.55f)
             val y = sy + (dst.top + v * dst.height() - sy) * down
             val l = src.left + (dst.left - src.left) * wide
             val r = src.right + (dst.right - src.right) * wide

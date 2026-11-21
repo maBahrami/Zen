@@ -125,6 +125,7 @@ object Store {
         val sb = StringBuilder(4096)
         sb.append("{\"v\":3,\"name\":").append(JSONObject.quote(d.name))
         if (withView && d.dark) sb.append(",\"dark\":true")
+        if (withView && d.zoomLocked) sb.append(",\"zl\":true")
         sb.append(",\"save\":").append(JSONObject.quote(d.saveUri ?: ""))
         sb.append(",\"origin\":").append(JSONObject.quote(d.originUri ?: ""))
         sb.append(",\"mL\":"); num(sb, d.marginL)
@@ -258,9 +259,11 @@ object Store {
         val pages: List<Page>,
         val dark: Boolean = false,
         val lastAdded: IntArray? = null,
+        val zoomLocked: Boolean = false,
     ) {
         fun applyTo(d: Doc) {
             d.dark = dark
+            d.zoomLocked = zoomLocked
             d.lastAdded = lastAdded
             d.marginL = mL.coerceIn(0f, 5000f)
             d.marginR = mR.coerceIn(0f, 5000f)
@@ -341,6 +344,7 @@ object Store {
             unsaved = o.optBoolean("unsaved", o.optBoolean("dirty", false)),
             pages = pages,
             dark = o.optBoolean("dark", false),
+            zoomLocked = o.optBoolean("zl", false),
             lastAdded = o.optJSONArray("la")?.let { a ->
                 if (a.length() != 3) null
                 else intArrayOf(
