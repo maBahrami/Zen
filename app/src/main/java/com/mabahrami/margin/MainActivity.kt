@@ -843,7 +843,6 @@ class MainActivity : ComponentActivity() {
 
     private fun loadTool() {
         pdfView.hlStraight = prefs.getBoolean("hl_straight", false)
-        pdfView.smoothTolDp = prefs.getFloat("smooth_dp", DEFAULT_SMOOTH_DP).coerceIn(0f, MAX_SMOOTH_DP)
         pdfView.penStyle = prefs.getInt("line_style", if (prefs.getBoolean("dashed", false)) LINE_DASHED else LINE_SOLID)
         setTool(prefs.getBoolean("tool_hl", false))
         refreshTool()
@@ -1047,59 +1046,9 @@ class MainActivity : ComponentActivity() {
         choice(R.drawable.ic_line_wavy, "Corrugated (wavy) line", LINE_WAVY)
         choice(R.drawable.ic_line_dashed, "Dashed line", LINE_DASHED)
         choice(R.drawable.ic_line_dotted, "Dotted line", LINE_DOTTED)
-        card.addView(smoothingRow(), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
         popup.showAsDropDown(penBtn, 0, dp(6))
     }
 
-    /** "Smoothing" slider with its number (0 = off), for the pen's line-style menu. */
-    private fun smoothingRow(): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(2), dp(4), dp(2))
-        }
-        row.addView(TextView(this).apply {
-            text = "Smoothing"
-            textSize = 13f
-            setTextColor(TEXT_DIM)
-        })
-        val steps = (MAX_SMOOTH_DP / SMOOTH_STEP_DP).roundToInt()
-        val value = TextView(this).apply {
-            textSize = 13f
-            setTextColor(TEXT)
-            minWidth = dp(34)
-            gravity = Gravity.END
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        }
-        fun show(v: Float) {
-            value.text = if (v <= 0f) "Off" else String.format(java.util.Locale.US, "%.2f", v)
-        }
-        val seek = SeekBar(this).apply {
-            max = steps
-            progress = (pdfView.smoothTolDp / SMOOTH_STEP_DP).roundToInt().coerceIn(0, steps)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            progressTintList = ColorStateList.valueOf(ACCENT)
-            thumbTintList = ColorStateList.valueOf(Color.WHITE)
-            progressBackgroundTintList = ColorStateList.valueOf(0xFF48484A.toInt())
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                    if (!fromUser) return
-                    val v = (p * SMOOTH_STEP_DP).coerceIn(0f, MAX_SMOOTH_DP)
-                    pdfView.smoothTolDp = v
-                    otherPane().smoothTolDp = v
-                    prefs.edit().putFloat("smooth_dp", v).apply()
-                    show(v)
-                }
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) {}
-            })
-        }
-        show(pdfView.smoothTolDp)
-        row.addView(seek, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(value)
-        return row
-    }
 
     private fun setEraser(on: Boolean) {
         pdfView.eraserMode = on
@@ -2000,7 +1949,6 @@ class MainActivity : ComponentActivity() {
         to.penWidth = from.penWidth
         to.penStyle = from.penStyle
         to.highlighter = from.highlighter
-        to.smoothTolDp = from.smoothTolDp
         to.hlStraight = from.hlStraight
         to.eraserMode = from.eraserMode
         to.lassoMode = from.lassoMode

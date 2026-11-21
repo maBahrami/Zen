@@ -12,10 +12,8 @@ const val SMOOTH_LIGHT = 1
 const val SMOOTH_MEDIUM = 2
 const val SMOOTH_STRONG = 3
 
-/** Default smoothing (dp on screen): gentle. The slider goes 0 (off) .. MAX_SMOOTH_DP in SMOOTH_STEP_DP steps. */
-const val DEFAULT_SMOOTH_DP = 0.35f
-const val MAX_SMOOTH_DP = 2f
-const val SMOOTH_STEP_DP = 0.05f
+/** Pen smoothing (dp on screen): the biggest wiggle treated as tremor. Fixed, very gentle (chosen on the tablet). */
+const val PEN_SMOOTH_DP = 0.1f
 
 /**
  * Cleans up a finished stroke without changing its shape:

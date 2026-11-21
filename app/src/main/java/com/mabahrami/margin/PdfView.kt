@@ -319,11 +319,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     var penColor = Color.BLACK
     var penWidth = 1.5f
     var penStyle = LINE_SOLID
-    /**
-     * Pen smoothing against hand tremor, applied when a stroke is finished: the biggest wiggle (dp on screen)
-     * that counts as tremor. 0 = off. Set from the slider in the pen's line-style menu.
-     */
-    var smoothTolDp = DEFAULT_SMOOTH_DP
+    /** Pen smoothing against hand tremor, applied when a stroke is finished (fixed at PEN_SMOOTH_DP; no setting). */
+    private val smoothTolDp = PEN_SMOOTH_DP
     /** Current tool is the highlighter (penColor/penWidth then hold the highlighter's). */
     var highlighter = false
     /** Straight-line highlighter: the stroke is always a straight line from start to the pen. */
