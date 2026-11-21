@@ -533,6 +533,8 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(6), dp(2), dp(6), dp(2))
             background = glass(20)
             elevation = dp(6).toFloat()
+            // the selected colour is taller than the colour strip: let it show beyond the strip
+            clipChildren = false
         }
         // shown only in focus mode, when the top bar is hidden
         lateinit var fInsert: ImageView
@@ -556,10 +558,12 @@ class MainActivity : ComponentActivity() {
         palette.addView(lassoBtn, palLp(1))
         palette.addView(divider(), palDivider())
         // colours: one continuous strip of rectangles, rounded at the ends
+        // the strip isn't clipped, so the selected colour can stand out a little (its ends are rounded per swatch)
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = rounded(Color.TRANSPARENT, 7)
-            clipToOutline = true
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
         }
         for (c in COLORS) {
             val v = View(this)
@@ -766,26 +770,28 @@ class MainActivity : ComponentActivity() {
         // in dark view the palette shows the colours as they are drawn there (black shows as white)
         val dark = active?.dark == true
         paletteDark = dark
-        for ((c, v) in swatches) {
+        val r = dp(7).toFloat()
+        for ((k, pair) in swatches.withIndex()) {
+            val (c, v) = pair
             val selected = c == pdfView.penColor && !pdfView.eraserMode
             // (highlights keep their own colours in dark view, so the highlighter palette doesn't change)
             val shown = if (dark && !hlMode) Dark.ink(c) else c
-            val fill = GradientDrawable().apply {
+            val first = k == 0
+            val last = k == swatches.size - 1
+            v.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 setColor(shown)
+                // the strip's rounded ends; a raised (selected) swatch is rounded all round, slightly
+                val e = if (selected) dp(3).toFloat() else 0f
+                val l = if (first) r else e
+                val rr = if (last) r else e
+                cornerRadii = floatArrayOf(l, l, rr, rr, rr, rr, l, l)
             }
-            v.background = if (!selected) fill else {
-                // the current colour gets a small dot in its middle (dark on light colours, white on dark ones)
-                val light = androidx.core.graphics.ColorUtils.calculateLuminance(shown) > 0.6
-                val dot = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(if (light) 0xD91C1C1E.toInt() else 0xF2FFFFFF.toInt())
-                }
-                android.graphics.drawable.LayerDrawable(arrayOf(fill, dot)).apply {
-                    setLayerSize(1, dp(7), dp(7))
-                    setLayerGravity(1, Gravity.CENTER)
-                }
-            }
+            // the current colour is taller than the others (all keep the same width) and lifted a little
+            v.animate().cancel()
+            v.animate().scaleX(1f).scaleY(if (selected) 1.25f else 1f)
+                .translationZ(if (selected) dp(4).toFloat() else 0f)
+                .setDuration(140).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
         }
         val w = pdfView.penWidth
         widthLabel.text = if (w % 1f == 0f) "${w.toInt()}" else String.format("%.2f", w).trimEnd('0').trimEnd('.')
