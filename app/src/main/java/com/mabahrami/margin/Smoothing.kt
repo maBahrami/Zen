@@ -12,6 +12,11 @@ const val SMOOTH_LIGHT = 1
 const val SMOOTH_MEDIUM = 2
 const val SMOOTH_STRONG = 3
 
+/** Default smoothing (dp on screen): gentle. The slider goes 0 (off) .. MAX_SMOOTH_DP in SMOOTH_STEP_DP steps. */
+const val DEFAULT_SMOOTH_DP = 0.35f
+const val MAX_SMOOTH_DP = 2f
+const val SMOOTH_STEP_DP = 0.05f
+
 /**
  * Cleans up a finished stroke without changing its shape:
  *  0. the stroke is resampled evenly (every half tolerance) and lightly averaged with its neighbours,
@@ -26,7 +31,7 @@ object Smoothing {
 
     /** Tolerance in dp on screen for each strength (how big a wiggle may be to count as tremor). */
     fun toleranceDp(strength: Int): Float = when (strength) {
-        SMOOTH_LIGHT -> 0.6f
+        SMOOTH_LIGHT -> 0.35f // gentle: only the finest tremor is taken out (was 0.6)
         SMOOTH_STRONG -> 1.6f
         else -> 1.0f // medium
     }
@@ -138,12 +143,12 @@ object Smoothing {
         return out.toFloatArray()
     }
 
-    /** Two passes of a [1, 2, 1] / 4 average over neighbours; the ends stay where they are. */
+    /** One pass of a [1, 2, 1] / 4 average over neighbours (was two, gentler now); the ends stay where they are. */
     private fun preSmooth(p: FloatArray): FloatArray {
         var a = p
         val n = a.size / 2
         if (n < 3) return a
-        repeat(2) {
+        repeat(1) {
             val b = a.copyOf()
             for (k in 1 until n - 1) {
                 b[2 * k] = (a[2 * k - 2] + 2 * a[2 * k] + a[2 * k + 2]) / 4f

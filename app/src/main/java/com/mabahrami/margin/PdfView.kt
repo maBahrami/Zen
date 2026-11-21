@@ -319,8 +319,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     var penColor = Color.BLACK
     var penWidth = 1.5f
     var penStyle = LINE_SOLID
-    /** Pen smoothing against hand tremor, applied when a stroke is finished (always light; no setting). */
-    private val smoothing = SMOOTH_LIGHT
+    /**
+     * Pen smoothing against hand tremor, applied when a stroke is finished: the biggest wiggle (dp on screen)
+     * that counts as tremor. 0 = off. Set from the slider in the pen's line-style menu.
+     */
+    var smoothTolDp = DEFAULT_SMOOTH_DP
     /** Current tool is the highlighter (penColor/penWidth then hold the highlighter's). */
     var highlighter = false
     /** Straight-line highlighter: the stroke is always a straight line from start to the pen. */
@@ -2330,8 +2333,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             if (liveSize >= 2 && page != null && d.pages.contains(page)) {
                 // freehand strokes: tremor smoothed out once finished (snapped lines and shapes are already clean);
                 // the tolerance is set on screen, so it's the same at every zoom
-                val pts = if (smoothing != SMOOTH_OFF && !livePoly && snapped == 0 && liveSize >= 6) {
-                    val tol = Smoothing.toleranceDp(smoothing) * resources.displayMetrics.density / d.scale
+                val pts = if (smoothTolDp > 0f && !livePoly && snapped == 0 && liveSize >= 6) {
+                    val tol = smoothTolDp * resources.displayMetrics.density / d.scale
                     try {
                         Smoothing.smooth(livePts, liveSize, tol)
                     } catch (t: Throwable) {
