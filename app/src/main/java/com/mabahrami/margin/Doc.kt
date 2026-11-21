@@ -23,7 +23,23 @@ class Stroke(
     val highlighter: Boolean = false,
     /** Straight segments between points (snapped rectangles/lines) instead of a smooth curve. */
     val poly: Boolean = false,
+    /** Pen pressure: a width factor per point (see [Pressure]), or null for an even line. */
+    widths: FloatArray? = null,
 ) {
+    /** Per-point width factors, only kept when they match the points exactly. */
+    val pw: FloatArray? = widths?.takeIf { f ->
+        f.size >= 2 && f.size == pts.size / 2 && f.all { it.isFinite() && it > 0f }
+    }
+
+    /** Filled outline for a pressure stroke (null = draw [path] with an even width, also if it can't be built). */
+    val fillPath: Path? by lazy {
+        if (pw == null) null else try {
+            Pressure.outline(this)?.let { Pressure.toPath(it) }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
     val minX: Float
     val minY: Float
     val maxX: Float
@@ -283,10 +299,10 @@ fun Stroke.transformed(dx: Float, dy: Float, s: Float, ax: Float, ay: Float): St
         p[i + 1] = ay + (pts[i + 1] - ay) * s + dy
         i += 2
     }
-    return Stroke(color, width * s, p, style, highlighter, poly)
+    return Stroke(color, width * s, p, style, highlighter, poly, pw)
 }
 
-fun Stroke.recoloured(c: Int): Stroke = Stroke(c, width, pts, style, highlighter, poly)
+fun Stroke.recoloured(c: Int): Stroke = Stroke(c, width, pts, style, highlighter, poly, pw)
 
 /** A page's own margins, remembered so "all pages" can be undone. */
 class PageOverride(val page: Page, val l: Float?, val r: Float?, val paper: Int?)

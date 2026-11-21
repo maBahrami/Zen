@@ -237,7 +237,17 @@ object Store {
                 if (j > 0) sb.append(',')
                 num(sb, s.pts[j])
             }
-            sb.append("]}")
+            sb.append(']')
+            val pw = s.pw
+            if (pw != null) {
+                sb.append(",\"pw\":[")
+                for (j in pw.indices) {
+                    if (j > 0) sb.append(',')
+                    num(sb, pw[j])
+                }
+                sb.append(']')
+            }
+            sb.append('}')
         }
         sb.append(']')
     }
@@ -292,7 +302,12 @@ object Store {
             val w = so.optDouble("w", 1.5).toFloat().coerceIn(0.1f, 60f)
             val style = if (so.has("st")) so.optInt("st", LINE_SOLID).coerceIn(LINE_SOLID, LINE_WAVY)
             else if (so.optBoolean("d", false)) LINE_DASHED else LINE_SOLID
-            into.add(Stroke(so.optInt("c", Color.BLACK), w, pts, style, so.optBoolean("hl", false), so.optBoolean("pl", false)))
+            // pressure widths: used only if they fit the points; otherwise the stroke is simply even
+            val wa = so.optJSONArray("pw")
+            val pw = if (wa != null && wa.length() == n / 2) {
+                FloatArray(wa.length()) { wa.optDouble(it, 1.0).toFloat().coerceIn(0.3f, 2f) }
+            } else null
+            into.add(Stroke(so.optInt("c", Color.BLACK), w, pts, style, so.optBoolean("hl", false), so.optBoolean("pl", false), pw))
         }
     }
 

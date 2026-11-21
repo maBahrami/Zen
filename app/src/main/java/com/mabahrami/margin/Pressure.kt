@@ -1,0 +1,222 @@
+package com.mabahrami.margin
+
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PathMeasure
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sin
+
+/**
+ * Gentle pressure-sensitive line width (like a fountain pen, but subtle): a light touch draws the line a
+ * little thinner, a firm press a little thicker, within [MIN_FACTOR]..[MAX_FACTOR] of the chosen width.
+ * Such a stroke is drawn as a filled outline, the same shape on screen and in the exported PDF.
+ */
+object Pressure {
+
+    const val MIN_FACTOR = 0.85f
+    const val MAX_FACTOR = 1.15f
+
+    /** Width factor for an S Pen pressure (0..1). About 1.0 at a normal writing pressure. */
+    fun factor(p: Float): Float {
+        val q = if (p.isFinite()) p.coerceIn(0f, 1f) else 0.4f
+        return MIN_FACTOR + (MAX_FACTOR - MIN_FACTOR) * q.pow(0.7f)
+    }
+
+    /**
+     * Width factors for the finished stroke's points [out], from the raw points and their pressures:
+     * each output point takes the pressure at the same distance along the raw stroke, then the factors
+     * are smoothed so the width never jumps. Returns null if there's nothing usable.
+     */
+    fun widths(raw: FloatArray, press: FloatArray, rawSize: Int, out: FloatArray): FloatArray? {
+        val rn = rawSize / 2
+        val on = out.size / 2
+        if (rn < 2 || on < 2 || press.size < rn) return null
+        // smooth the raw pressure a little first (pen pressure is noisy)
+        val pr = FloatArray(rn)
+        var ema = press[0]
+        for (k in 0 until rn) {
+            val p = if (press[k].isFinite()) press[k] else ema
+            ema += (p - ema) * 0.35f
+            pr[k] = ema
+        }
+        val rl = cumulative(raw, rn)
+        val ol = cumulative(out, on)
+        val rTotal = rl[rn - 1]
+        val oTotal = ol[on - 1]
+        val f = FloatArray(on)
+        var j = 0
+        for (i in 0 until on) {
+            val target = if (oTotal > 1e-6f) ol[i] / oTotal * rTotal else 0f
+            while (j < rn - 2 && rl[j + 1] < target) j++
+            val seg = rl[j + 1] - rl[j]
+            val t = if (seg > 1e-6f) ((target - rl[j]) / seg).coerceIn(0f, 1f) else 0f
+            f[i] = factor(pr[j] + (pr[j + 1] - pr[j]) * t)
+        }
+        // a short moving average over the output points
+        val g = FloatArray(on)
+        val r = 3
+        for (i in 0 until on) {
+            var s = 0f
+            var c = 0
+            for (k in max(0, i - r)..min(on - 1, i + r)) {
+                s += f[k]; c++
+            }
+            g[i] = (s / c).coerceIn(MIN_FACTOR, MAX_FACTOR)
+        }
+        return g
+    }
+
+    private fun cumulative(p: FloatArray, n: Int): FloatArray {
+        val l = FloatArray(n)
+        for (k in 1 until n) l[k] = l[k - 1] + hypot(p[2 * k] - p[2 * k - 2], p[2 * k + 1] - p[2 * k - 1])
+        return l
+    }
+
+    /**
+     * Filled outline of a pressure stroke, as closed polygons (x0, y0, x1, y1, ...): the body with round
+     * ends, plus a round dot at every sharp turn so corners are always fully filled. All polygons turn the
+     * same way, so non-zero filling (Android and PDF) fills their union.
+     */
+    fun outline(s: Stroke): List<FloatArray>? {
+        val pw = s.pw ?: return null
+        val n = s.pts.size / 2
+        if (n < 2 || pw.size != n) return null
+        val pm = PathMeasure(s.path, false)
+        val len = pm.length
+        val w = s.width
+        if (!(len > 1e-3f)) {
+            return listOf(circle(s.pts[0], s.pts[1], w * pw[0] / 2f, true))
+        }
+        // where each stored point lies along the stroke, to look up its width at any distance
+        val cl = cumulative(s.pts, n)
+        val cTotal = cl[n - 1]
+        fun widthAt(d: Float): Float {
+            if (cTotal <= 1e-6f) return w * pw[0]
+            val target = d / len * cTotal
+            var lo = 0
+            var hi = n - 1
+            while (hi - lo > 1) {
+                val mid = (lo + hi) ushr 1
+                if (cl[mid] <= target) lo = mid else hi = mid
+            }
+            val seg = cl[hi] - cl[lo]
+            val t = if (seg > 1e-6f) ((target - cl[lo]) / seg).coerceIn(0f, 1f) else 0f
+            return w * (pw[lo] + (pw[hi] - pw[lo]) * t)
+        }
+        val step = (w * 0.3f).coerceIn(0.15f, 0.6f)
+        val m = min(6000, (len / step).toInt() + 1).coerceAtLeast(2)
+        val px = FloatArray(m); val py = FloatArray(m)
+        val tx = FloatArray(m); val ty = FloatArray(m)
+        val hw = FloatArray(m)
+        val pos = FloatArray(2)
+        val tan = FloatArray(2)
+        for (i in 0 until m) {
+            val d = len * i / (m - 1)
+            pm.getPosTan(d, pos, tan)
+            var a = tan[0]; var b = tan[1]
+            val tl = hypot(a, b)
+            if (tl > 1e-6f) { a /= tl; b /= tl } else if (i > 0) { a = tx[i - 1]; b = ty[i - 1] } else { a = 1f; b = 0f }
+            px[i] = pos[0]; py[i] = pos[1]; tx[i] = a; ty[i] = b
+            hw[i] = widthAt(d) / 2f
+        }
+        val capSeg = 8
+        val body = FloatArray((2 * m + 2 * (capSeg - 1)) * 2)
+        var k = 0
+        fun put(x: Float, y: Float) { body[k++] = x; body[k++] = y }
+        // left side, forward (normal = (-ty, tx))
+        for (i in 0 until m) put(px[i] - ty[i] * hw[i], py[i] + tx[i] * hw[i])
+        // round end: from left to right around the tip
+        run {
+            val i = m - 1
+            for (c in 1 until capSeg) {
+                val a = PI.toFloat() * c / capSeg
+                val ca = cos(a); val sa = sin(a)
+                put(px[i] + hw[i] * (-ty[i] * ca + tx[i] * sa), py[i] + hw[i] * (tx[i] * ca + ty[i] * sa))
+            }
+        }
+        // right side, backward
+        for (i in m - 1 downTo 0) put(px[i] + ty[i] * hw[i], py[i] - tx[i] * hw[i])
+        // round start: from right back to left around the start
+        for (c in 1 until capSeg) {
+            val a = PI.toFloat() * c / capSeg
+            val ca = cos(a); val sa = sin(a)
+            put(px[0] + hw[0] * (ty[0] * ca - tx[0] * sa), py[0] + hw[0] * (-tx[0] * ca - ty[0] * sa))
+        }
+        val polys = ArrayList<FloatArray>()
+        val body2 = if (k == body.size) body else body.copyOf(k)
+        polys.add(body2)
+        val ccw = signedArea(body2) > 0f
+        // dots at sharp turns (the inner edge folds there)
+        var lastDot = -10
+        for (i in 1 until m) {
+            val turn = abs(angle(tx[i - 1], ty[i - 1], tx[i], ty[i]))
+            if (turn > 0.35f && i - lastDot > 1) {
+                polys.add(circle(px[i], py[i], hw[i], ccw))
+                lastDot = i
+            }
+        }
+        return polys
+    }
+
+    private fun angle(ax: Float, ay: Float, bx: Float, by: Float): Float =
+        atan2(ax * by - ay * bx, ax * bx + ay * by)
+
+    private fun signedArea(p: FloatArray): Float {
+        var s = 0.0
+        val n = p.size / 2
+        for (i in 0 until n) {
+            val j = (i + 1) % n
+            s += p[2 * i].toDouble() * p[2 * j + 1] - p[2 * j].toDouble() * p[2 * i + 1]
+        }
+        return (s / 2).toFloat()
+    }
+
+    private fun circle(cx: Float, cy: Float, r: Float, ccw: Boolean): FloatArray {
+        val seg = 14
+        val out = FloatArray(seg * 2)
+        for (i in 0 until seg) {
+            val a = 2 * PI.toFloat() * i / seg * (if (ccw) 1f else -1f)
+            out[2 * i] = cx + r * cos(a)
+            out[2 * i + 1] = cy + r * sin(a)
+        }
+        return out
+    }
+
+    /** The polygons as one Android path (non-zero fill). */
+    fun toPath(polys: List<FloatArray>): Path {
+        val p = Path()
+        p.fillType = Path.FillType.WINDING
+        for (poly in polys) {
+            if (poly.size < 6) continue
+            p.moveTo(poly[0], poly[1])
+            var i = 2
+            while (i + 1 < poly.size) {
+                p.lineTo(poly[i], poly[i + 1]); i += 2
+            }
+            p.close()
+        }
+        return p
+    }
+
+    /**
+     * Draws an ink stroke: a pressure stroke as its filled outline in [stroke]'s colour (using [fill]),
+     * any other stroke as before with [stroke].
+     */
+    fun draw(c: Canvas, s: Stroke, stroke: Paint, fill: Paint) {
+        val fp = s.fillPath
+        if (fp == null) {
+            c.drawPath(s.path, stroke)
+            return
+        }
+        fill.color = stroke.color
+        c.drawPath(fp, fill)
+    }
+}

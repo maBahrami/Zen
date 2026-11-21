@@ -461,6 +461,30 @@ object Exporter {
         cs.setStrokingColor(
             PDColor(floatArrayOf(Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f), PDDeviceRGB.INSTANCE)
         )
+        // pressure stroke: the same filled outline as on screen
+        val outline = if (s.pw != null) {
+            try { Pressure.outline(s) } catch (t: Throwable) { null }
+        } else null
+        if (outline != null) {
+            cs.setNonStrokingColor(
+                PDColor(floatArrayOf(Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f), PDDeviceRGB.INSTANCE)
+            )
+            var any = false
+            for (poly in outline) {
+                if (poly.size < 6) continue
+                cs.moveTo(poly[0], poly[1])
+                var i = 2
+                while (i + 1 < poly.size) {
+                    cs.lineTo(poly[i], poly[i + 1]); i += 2
+                }
+                cs.closePath()
+                any = true
+            }
+            if (any) {
+                cs.fill() // non-zero: the union of all parts
+                return
+            }
+        }
         cs.setLineWidth(s.width)
         if (s.style == LINE_WAVY && n >= 2) {
             // corrugated: the same wavy polyline as on screen, as vectors

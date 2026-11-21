@@ -481,6 +481,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private var livePageIndex = -1
     private var livePts = FloatArray(512)
     private var liveSize = 0
+    /** Pen pressure for each live point (livePress[k] belongs to point k). */
+    private var livePress = FloatArray(256)
+    /** Pressure of the pen sample being added. */
+    private var curPressure = 0.4f
+    /** The live stroke comes from the S Pen, so its pressure is real. */
+    private var liveHasPressure = false
+    private val inkFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private var livePath: Path? = null
     private var liveColor = Color.BLACK
     private var liveWidth = 1.5f
@@ -1430,7 +1437,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 if (st.highlighter) continue
                 if (hideSel && isSelected(st)) continue
                 applyStyle(st.color, st.width, st.style)
-                canvas.drawPath(st.path, inkPaint)
+                Pressure.draw(canvas, st, inkPaint, inkFill)
             }
             if (liveHere && !liveHighlighter) {
                 applyStyle(liveColor, liveWidth, liveStyle)
@@ -1520,7 +1527,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         hlPaint.blendMode = null; hlPaint.alpha = 255
                     } else {
                         applyStyle(st.color, st.width, st.style)
-                        canvas.drawPath(st.path, inkPaint)
+                        Pressure.draw(canvas, st, inkPaint, inkFill)
                     }
                 }
                 canvas.restore()
@@ -2052,8 +2059,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                             if (snapped == 1) moveSnappedLineEnd(d, ex, ey)
                         } else {
                             for (h in 0 until e.historySize) {
+                                curPressure = e.getHistoricalPressure(idx, h)
                                 penPoint(d, e.getHistoricalX(idx, h), e.getHistoricalY(idx, h))
                             }
+                            curPressure = e.getPressure(idx)
                             penPoint(d, ex, ey)
                             if (mode == MODE_INK && hypot(ex - holdX, ey - holdY) > holdSlopPx) {
                                 // still moving: restart the hold timer from here
@@ -2219,6 +2228,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             eraseAt(d, x, y)
             showEraser(x, y)
         } else {
+            curPressure = e.getPressure(idx)
+            liveHasPressure = e.getToolType(idx) == MotionEvent.TOOL_TYPE_STYLUS
             mode = if (startStroke(d, x, y)) MODE_INK else MODE_NONE
         }
     }
@@ -2274,6 +2285,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (liveSize + 2 > livePts.size) livePts = livePts.copyOf(livePts.size * 2)
         livePts[liveSize++] = px
         livePts[liveSize++] = py
+        val k = liveSize / 2 - 1
+        if (k >= livePress.size) livePress = livePress.copyOf(max(livePress.size * 2, k + 1))
+        livePress[k] = curPressure
     }
 
     private fun eraseAt(d: Doc, x: Float, y: Float) {
@@ -2338,7 +2352,16 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         livePts.copyOf(liveSize) // never lose a stroke to smoothing
                     }
                 } else livePts.copyOf(liveSize)
-                val s = Stroke(liveColor, liveWidth, pts, liveStyle, liveHighlighter, livePoly)
+                // gentle pressure width: S Pen freehand solid ink only (not highlighter, dashes, lines or shapes)
+                val pw = if (liveHasPressure && !liveHighlighter && liveStyle == LINE_SOLID && !livePoly &&
+                    snapped == 0 && liveSize >= 4) {
+                    try {
+                        Pressure.widths(livePts, livePress, liveSize, pts)
+                    } catch (t: Throwable) {
+                        null // never lose a stroke: it's just drawn evenly
+                    }
+                } else null
+                val s = Stroke(liveColor, liveWidth, pts, liveStyle, liveHighlighter, livePoly, pw)
                 page.strokes.add(s)
                 d.push(Action.Add(page, s))
                 onChange?.invoke(d)

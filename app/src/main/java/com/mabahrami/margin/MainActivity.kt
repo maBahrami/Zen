@@ -4418,12 +4418,15 @@ class MainActivity : ComponentActivity() {
             strokeCap = android.graphics.Paint.Cap.ROUND
             strokeJoin = android.graphics.Paint.Join.ROUND
         }
+        val inkFill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.FILL
+        }
         for (st in sel.strokes) {
             ink.color = st.color
             ink.alpha = if (st.highlighter) (HIGHLIGHT_ALPHA * 255).toInt() else 255
             ink.strokeWidth = maxOf(st.width, 1f / sc)
             ink.pathEffect = linePattern(st.style, st.width)?.let { android.graphics.DashPathEffect(it, 0f) }
-            c.drawPath(st.path, ink)
+            Pressure.draw(c, st, ink, inkFill)
         }
         return bmp
     }

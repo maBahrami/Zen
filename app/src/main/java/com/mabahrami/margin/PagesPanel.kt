@@ -400,6 +400,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
             }
+            val inkFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
             if (s.strokes.any { it.highlighter }) {
                 c.saveLayer(RectF(-s.mL, 0f, s.w + s.mR, s.h.toFloat()), hlLayer)
                 for (st in s.strokes) if (st.highlighter) {
@@ -413,7 +414,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
                 ink.color = st.color
                 ink.strokeWidth = max(st.width, 0.8f / sc) // keep thin lines visible when tiny
                 ink.pathEffect = linePattern(st.style, st.width)?.let { DashPathEffect(it, 0f) }
-                c.drawPath(st.path, ink)
+                Pressure.draw(c, st, ink, inkFill)
             }
             if (s.dark) {
                 // photos keep their colours, like on the page itself
