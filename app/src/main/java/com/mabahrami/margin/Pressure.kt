@@ -30,23 +30,18 @@ object Pressure {
         return MIN_FACTOR + (MAX_FACTOR - MIN_FACTOR) * q.pow(0.7f)
     }
 
+    /** How quickly the width follows the pressure while writing (0..1): smooths out pen pressure noise. */
+    const val FOLLOW = 0.3f
+
     /**
-     * Width factors for the finished stroke's points [out], from the raw points and their pressures:
-     * each output point takes the pressure at the same distance along the raw stroke, then the factors
-     * are smoothed so the width never jumps. Returns null if there's nothing usable.
+     * Width factors for the finished stroke's points [out], from the factors the live stroke already showed
+     * ([fact], one per raw point): each output point takes the factor at the same distance along the stroke,
+     * so the line keeps exactly the thickness it had while writing. Returns null if there's nothing usable.
      */
-    fun widths(raw: FloatArray, press: FloatArray, rawSize: Int, out: FloatArray): FloatArray? {
+    fun widths(raw: FloatArray, fact: FloatArray, rawSize: Int, out: FloatArray): FloatArray? {
         val rn = rawSize / 2
         val on = out.size / 2
-        if (rn < 2 || on < 2 || press.size < rn) return null
-        // smooth the raw pressure a little first (pen pressure is noisy)
-        val pr = FloatArray(rn)
-        var ema = press[0]
-        for (k in 0 until rn) {
-            val p = if (press[k].isFinite()) press[k] else ema
-            ema += (p - ema) * 0.35f
-            pr[k] = ema
-        }
+        if (rn < 2 || on < 2 || fact.size < rn) return null
         val rl = cumulative(raw, rn)
         val ol = cumulative(out, on)
         val rTotal = rl[rn - 1]
@@ -58,20 +53,9 @@ object Pressure {
             while (j < rn - 2 && rl[j + 1] < target) j++
             val seg = rl[j + 1] - rl[j]
             val t = if (seg > 1e-6f) ((target - rl[j]) / seg).coerceIn(0f, 1f) else 0f
-            f[i] = factor(pr[j] + (pr[j + 1] - pr[j]) * t)
+            f[i] = (fact[j] + (fact[j + 1] - fact[j]) * t).coerceIn(MIN_FACTOR, MAX_FACTOR)
         }
-        // a short moving average over the output points
-        val g = FloatArray(on)
-        val r = 3
-        for (i in 0 until on) {
-            var s = 0f
-            var c = 0
-            for (k in max(0, i - r)..min(on - 1, i + r)) {
-                s += f[k]; c++
-            }
-            g[i] = (s / c).coerceIn(MIN_FACTOR, MAX_FACTOR)
-        }
-        return g
+        return f
     }
 
     private fun cumulative(p: FloatArray, n: Int): FloatArray {
