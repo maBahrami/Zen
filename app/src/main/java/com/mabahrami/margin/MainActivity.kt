@@ -221,6 +221,7 @@ class MainActivity : ComponentActivity() {
                 placeBar(lassoBar, r.left, r.top, r.right, r.bottom)
             }
         }
+        pdfView.onPullAddPage = { active?.let { askNewPage(it.pageCount, likeDoc = true) } }
         pdfView.onCurrentPage = { i ->
             if (pagesPanel.visibility == View.VISIBLE) pagesPanel.setCurrent(i)
             updatePageBadge(i)
@@ -1483,11 +1484,40 @@ class MainActivity : ComponentActivity() {
     }
 
     /** New page: size (same as document / A4 / A5) and paper (blank / lined / grid). */
-    private fun askNewPage(index: Int) {
+    /**
+     * [likeDoc]: start from this document's own pages (pull past the last page) instead of the last
+     * choices in this window: like the last page added to it, or else like its first page.
+     */
+    private fun askNewPage(index: Int, likeDoc: Boolean = false) {
         val d = active ?: return
         var size = prefs.getInt("newpage_size", 0)
         var paper = prefs.getInt("newpage_paper", PAPER_BLANK)
         var landscape = prefs.getBoolean("newpage_landscape", false)
+        if (likeDoc) {
+            val src = d.sources.firstOrNull()
+            val docW = if (src != null && src.w.isNotEmpty()) src.w[0] else 595
+            val docH = if (src != null && src.h.isNotEmpty()) src.h[0] else 842
+            val last = d.lastAdded
+            if (last != null) {
+                val lo = minOf(last[0], last[1])
+                val hi = maxOf(last[0], last[1])
+                size = when {
+                    lo == minOf(docW, docH) && hi == maxOf(docW, docH) -> 0
+                    lo == 595 && hi == 842 -> 1
+                    lo == 420 && hi == 595 -> 2
+                    else -> 0
+                }
+                landscape = last[0] > last[1]
+                paper = last[2]
+            } else {
+                val first = d.pages.firstOrNull()
+                size = 0
+                landscape = if (first != null) first.w > first.h else docW > docH
+                paper = if (first != null && first.isBlank) first.paper else PAPER_BLANK
+            }
+        }
+        paper = paper.coerceIn(PAPER_BLANK, PAPER_GRID)
+        size = size.coerceIn(0, 2)
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -1531,10 +1561,21 @@ class MainActivity : ComponentActivity() {
             .setView(box)
             .setPositiveButton("Add") { _, _ ->
                 if (active !== d) return@setPositiveButton
-                prefs.edit().putInt("newpage_size", size).putInt("newpage_paper", paper)
-                    .putBoolean("newpage_landscape", landscape).apply()
+                if (!likeDoc) {
+                    prefs.edit().putInt("newpage_size", size).putInt("newpage_paper", paper)
+                        .putBoolean("newpage_landscape", landscape).apply()
+                }
                 val (w, h) = dims()
-                pdfView.insertBlankPage(index, w, h, paper)
+                val at = index.coerceIn(0, d.pageCount)
+                pdfView.insertBlankPage(at, w, h, paper)
+                if (likeDoc) {
+                    // show the new page right away
+                    pdfView.post { pdfView.scrollToPage(at) }
+                    if (pagesPanel.visibility == View.VISIBLE) {
+                        pagesPanel.setCurrent(at)
+                        pagesPanel.scrollToCurrent()
+                    }
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()

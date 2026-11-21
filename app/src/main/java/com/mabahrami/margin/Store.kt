@@ -134,6 +134,7 @@ object Store {
         sb.append(",\"tx\":"); num(sb, d.tx)
         sb.append(",\"ty\":"); num(sb, d.ty)
         sb.append(",\"unsaved\":").append(d.unsaved)
+        d.lastAdded?.let { sb.append(",\"la\":[").append(it[0]).append(',').append(it[1]).append(',').append(it[2]).append(']') }
         sb.append(",\"sources\":[")
         for ((i, src) in d.sources.withIndex()) {
             if (i > 0) sb.append(',')
@@ -256,9 +257,11 @@ object Store {
         val unsaved: Boolean,
         val pages: List<Page>,
         val dark: Boolean = false,
+        val lastAdded: IntArray? = null,
     ) {
         fun applyTo(d: Doc) {
             d.dark = dark
+            d.lastAdded = lastAdded
             d.marginL = mL.coerceIn(0f, 5000f)
             d.marginR = mR.coerceIn(0f, 5000f)
             d.marginPaper = mp
@@ -338,6 +341,14 @@ object Store {
             unsaved = o.optBoolean("unsaved", o.optBoolean("dirty", false)),
             pages = pages,
             dark = o.optBoolean("dark", false),
+            lastAdded = o.optJSONArray("la")?.let { a ->
+                if (a.length() != 3) null
+                else intArrayOf(
+                    a.optInt(0, 595).coerceIn(10, 20000),
+                    a.optInt(1, 842).coerceIn(10, 20000),
+                    a.optInt(2, PAPER_BLANK).coerceIn(PAPER_BLANK, PAPER_GRID),
+                )
+            },
         )
     }
 

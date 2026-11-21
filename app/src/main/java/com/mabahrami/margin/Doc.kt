@@ -317,6 +317,9 @@ class Doc(
     /** The file this tab was opened from (for "Save in place"), if known. */
     var originUri: String? = null
 
+    /** Size and paper of the blank page added most recently (w, h, paper), or null if none was added yet. */
+    var lastAdded: IntArray? = null
+
     /** Dark view (display only: never changes what Save or Export writes). */
     var dark = false
 

@@ -59,6 +59,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     var onChange: ((Doc) -> Unit)? = null
+    /** Pulled up past the last page and held: the user wants a new page at the end. */
+    var onPullAddPage: (() -> Unit)? = null
     /** Called when the selected image changes (null = nothing selected). */
     var onSelection: ((ImageItem?) -> Unit)? = null
     /** The page in the middle of the screen changed (for the page overview). */
@@ -289,6 +291,34 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private var longPressFired = false
     private val longPress = Runnable { onLongPress() }
 
+    // ---- pull up past the last page and hold to add a page ----
+    /** How far the finger has pulled past the end (px); the content moves half of it (rubber band). */
+    private var pullPx = 0f
+    /** The pull has fired for this touch: ignore further pulling until the finger lifts. */
+    private var pullDone = false
+    /** When the pull first reached the threshold (uptime ms), or 0 while below it. */
+    private var pullArmedAt = 0L
+    private val pullThresholdPx = 150f * density
+    private val pullMaxPx = 230f * density
+    private val pullHoldMs = 650L
+    private var pullAnim: android.animation.ValueAnimator? = null
+    private val pullHold = Runnable { firePull() }
+    private val pullCirclePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2C2C2E.toInt() }
+    private val pullRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val pullPlusPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        color = Color.WHITE
+    }
+    private val pullTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFAEAEB2.toInt()
+        textAlign = Paint.Align.CENTER
+    }
+    private val pullArc = RectF()
+
     private var interacting = false
     private var flinging = false
     private var multiTouch = false
@@ -315,6 +345,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     // ======================= public API =======================
 
     fun setDoc(d: Doc?) {
+        resetPull(animate = false)
         cancelLive()
         erased.clear()
         removeCallbacks(longPress)
@@ -730,6 +761,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val at = index.coerceIn(0, d.pageCount)
         d.pages.addAll(at, pages)
         d.push(Action.InsertPages(at, pages))
+        pages.lastOrNull { it.isBlank }?.let { d.lastAdded = intArrayOf(it.w, it.h, it.paper) }
         afterLayoutChange(d)
         onChange?.invoke(d)
     }
@@ -978,6 +1010,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val s = d.scale
         val visTop = -d.ty / s
         val visBottom = (height - d.ty) / s
+        // pulling past the last page lifts the content (rubber band) to make room for the + indicator
+        val pullOff = pullOffset()
+        if (pullOff > 0f) {
+            canvas.save()
+            canvas.translate(0f, -pullOff)
+        }
 
         canvas.save()
         canvas.translate(d.tx, d.ty)
@@ -1091,6 +1129,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
         }
         canvas.restore()
+        if (pullOff > 0f) {
+            canvas.restore()
+            drawPullIndicator(canvas, pullOff)
+        }
         val cur = currentPageIndex()
         if (cur != lastReportedPage) {
             lastReportedPage = cur
@@ -1545,6 +1587,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     removeCallbacks(longPress)
                     if (isPen(e, idx)) {
                         // pen landed while a palm/finger was panning: switch to the pen
+                        resetPull(animate = true)
                         velocity?.recycle(); velocity = null
                         interacting = false
                         if (selItem != null) clearSelection()
@@ -1608,7 +1651,20 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         scaleDetector.onTouchEvent(e)
                         computeFocus(e, -1)
                         d.tx += focusX - lastFx
-                        d.ty += focusY - lastFy
+                        val dy = focusY - lastFy
+                        if (pullPx > 0f && !multiTouch && !pullDone) {
+                            // already pulling past the end: the finger changes the pull first
+                            setPull(pullPx - dy)
+                        } else {
+                            val wanted = d.ty + dy
+                            d.ty = wanted
+                            clamp(d)
+                            // the end stopped the scroll while pulling up: start pulling
+                            if (!multiTouch && !pullDone && d.pageCount > 0 && dy < 0f && d.ty > wanted + 0.5f) {
+                                setPull(d.ty - wanted)
+                            }
+                        }
+                        if (multiTouch && pullPx > 0f) resetPull(animate = true)
                         lastFx = focusX; lastFy = focusY
                         clamp(d)
                         invalidate()
@@ -1650,7 +1706,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                             vt.computeCurrentVelocity(1000)
                             val vx = vt.xVelocity
                             val vy = vt.yVelocity
-                            if (!multiTouch && !longPressFired && hypot(vx, vy) > 400f * density) {
+                            if (!multiTouch && !longPressFired && pullPx <= 0f && hypot(vx, vy) > 400f * density) {
                                 startFling(d, vx, vy); flung = true
                             }
                             vt.recycle()
@@ -1659,6 +1715,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         if (!flung) interacting = false
                         val quick = SystemClock.uptimeMillis() - downTime < longPressMs
                         if (!multiTouch && !movedPastSlop && !longPressFired && quick) onTap(d, e.x, e.y)
+                        resetPull(animate = true)
+                        pullDone = false
                         invalidate()
                     }
                 }
@@ -1676,6 +1734,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     MODE_NAV -> {
                         velocity?.recycle(); velocity = null
                         interacting = false
+                        resetPull(animate = true)
+                        pullDone = false
                     }
                 }
                 mode = MODE_NONE
@@ -1898,6 +1958,98 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         scroller.fling(d.tx.toInt(), d.ty.toInt(), vx.toInt(), vy.toInt(), minX, maxX, minY, maxY)
         flinging = true
         postInvalidateOnAnimation()
+    }
+
+    // ======================= pull to add a page =======================
+
+    /** Visible lift of the content: half the pull (rubber band), never more than half the max pull. */
+    private fun pullOffset(): Float = pullPx.coerceIn(0f, pullMaxPx) * 0.5f
+
+    /** Sets the pull distance; holding at or past the threshold for [pullHoldMs] adds a page. */
+    private fun setPull(px: Float) {
+        pullAnim?.cancel()
+        pullAnim = null
+        pullPx = px.coerceIn(0f, pullMaxPx)
+        if (pullPx >= pullThresholdPx && !pullDone) {
+            if (pullArmedAt == 0L) {
+                pullArmedAt = SystemClock.uptimeMillis()
+                removeCallbacks(pullHold)
+                postDelayed(pullHold, pullHoldMs)
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            }
+        } else if (pullArmedAt != 0L) {
+            pullArmedAt = 0L
+            removeCallbacks(pullHold)
+        }
+        invalidate()
+    }
+
+    /** Lets the content slide back down; cancels a pending hold. */
+    private fun resetPull(animate: Boolean) {
+        removeCallbacks(pullHold)
+        pullArmedAt = 0L
+        pullAnim?.cancel()
+        pullAnim = null
+        if (pullPx <= 0f) return
+        if (!animate || !isAttachedToWindow) {
+            pullPx = 0f
+            invalidate()
+            return
+        }
+        pullAnim = android.animation.ValueAnimator.ofFloat(pullPx, 0f).apply {
+            duration = 220
+            interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener {
+                pullPx = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun firePull() {
+        pullArmedAt = 0L
+        if (pullDone || pullPx < pullThresholdPx || mode != MODE_NAV || multiTouch || doc == null) return
+        pullDone = true // one page per pull; lift the finger to pull again
+        performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        resetPull(animate = true)
+        onPullAddPage?.invoke()
+    }
+
+    /** Round "+" below the last page; its ring fills while the user holds the pull. */
+    private fun drawPullIndicator(canvas: Canvas, off: Float) {
+        val frac = (pullPx / pullThresholdPx).coerceIn(0f, 1f)
+        val r = 20f * density
+        val cx = width / 2f
+        val cy = height - off / 2f - 8f * density
+        if (cy + r < 0f) return
+        val alpha = (frac * 255).toInt()
+        pullCirclePaint.alpha = alpha
+        canvas.drawCircle(cx, cy, r, pullCirclePaint)
+        // plus sign
+        val a = r * 0.42f
+        pullPlusPaint.strokeWidth = 2.2f * density
+        pullPlusPaint.alpha = alpha
+        canvas.drawLine(cx - a, cy, cx + a, cy, pullPlusPaint)
+        canvas.drawLine(cx, cy - a, cx, cy + a, pullPlusPaint)
+        // ring: dim while pulling, blue and filling while held at the threshold
+        pullRingPaint.strokeWidth = 2.5f * density
+        pullArc.set(cx - r, cy - r, cx + r, cy + r)
+        val armed = pullArmedAt != 0L
+        if (armed) {
+            val t = ((SystemClock.uptimeMillis() - pullArmedAt).toFloat() / pullHoldMs).coerceIn(0f, 1f)
+            pullRingPaint.color = 0xFF0A84FF.toInt()
+            canvas.drawArc(pullArc, -90f, 360f * t, false, pullRingPaint)
+            postInvalidateOnAnimation()
+        } else {
+            pullRingPaint.color = 0xFF636366.toInt()
+            pullRingPaint.alpha = alpha
+            canvas.drawArc(pullArc, -90f, 360f * frac, false, pullRingPaint)
+        }
+        pullTextPaint.textSize = 13f * density
+        pullTextPaint.alpha = alpha
+        val label = if (armed) "Keep holding to add a page" else if (pullDone) "" else "Pull and hold to add a page"
+        if (label.isNotEmpty() && cy - r - 10f * density > 0f) canvas.drawText(label, cx, cy - r - 10f * density, pullTextPaint)
     }
 
     override fun computeScroll() {
