@@ -121,13 +121,64 @@ object Store {
     fun safeRelPath(rel: String): Boolean = SOURCE_NAME.matches(rel) || IMAGE_NAME.matches(rel)
 
     /** [withView]: include display-only settings (dark view); false for state embedded in saved PDFs. */
-    fun serialize(d: Doc, withView: Boolean = true): String {
+    fun serialize(d: Doc, withView: Boolean = true): String = snapshot(d, withView).toJson()
+
+    /** An image as state.json stores it. */
+    class ImgSnap(
+        val file: String, val iw: Int, val ih: Int,
+        val x: Float, val y: Float, val w: Float, val h: Float,
+        val cl: Float, val ct: Float, val cr: Float, val cb: Float, val locked: Boolean,
+    )
+
+    /** A page as state.json stores it. Strokes never change once made, so they're shared, not copied. */
+    class PageSnap(
+        val file: Int, val src: Int, val w: Int, val h: Int, val paper: Int,
+        val mL: Float?, val mR: Float?, val mPaper: Int?,
+        val strokes: List<Stroke>, val images: List<ImgSnap>,
+    )
+
+    /**
+     * Everything state.json holds, taken from a Doc in a moment (main thread). Turning it into text is the
+     * slow part, and that can then run on another thread, so autosave never holds up the pen.
+     */
+    class Snapshot(
+        val name: String, val dark: Boolean, val zoomLocked: Boolean, val save: String, val origin: String,
+        val marginL: Float, val marginR: Float, val marginPaper: Int,
+        val scale: Float, val tx: Float, val ty: Float, val unsaved: Boolean, val lastAdded: IntArray?,
+        val sources: List<String>, val pages: List<PageSnap>,
+    ) {
+        fun toJson(): String = write(this)
+    }
+
+    fun snapshot(d: Doc, withView: Boolean = true): Snapshot = Snapshot(
+        name = d.name,
+        dark = withView && d.dark,
+        zoomLocked = withView && d.zoomLocked,
+        save = d.saveUri ?: "",
+        origin = d.originUri ?: "",
+        marginL = d.marginL, marginR = d.marginR, marginPaper = d.marginPaper,
+        scale = d.scale, tx = d.tx, ty = d.ty,
+        unsaved = d.unsaved,
+        lastAdded = d.lastAdded?.copyOf(),
+        sources = d.sources.map { it.name },
+        pages = d.pages.map { p ->
+            PageSnap(
+                p.file, p.src, p.w, p.h, p.paper, p.mL, p.mR, p.mPaper,
+                ArrayList(p.strokes),
+                p.images.map { im ->
+                    ImgSnap(im.file, im.imgW, im.imgH, im.x, im.y, im.w, im.h, im.cl, im.ct, im.cr, im.cb, im.locked)
+                },
+            )
+        },
+    )
+
+    private fun write(d: Snapshot): String {
         val sb = StringBuilder(4096)
         sb.append("{\"v\":3,\"name\":").append(JSONObject.quote(d.name))
-        if (withView && d.dark) sb.append(",\"dark\":true")
-        if (withView && d.zoomLocked) sb.append(",\"zl\":true")
-        sb.append(",\"save\":").append(JSONObject.quote(d.saveUri ?: ""))
-        sb.append(",\"origin\":").append(JSONObject.quote(d.originUri ?: ""))
+        if (d.dark) sb.append(",\"dark\":true")
+        if (d.zoomLocked) sb.append(",\"zl\":true")
+        sb.append(",\"save\":").append(JSONObject.quote(d.save))
+        sb.append(",\"origin\":").append(JSONObject.quote(d.origin))
         sb.append(",\"mL\":"); num(sb, d.marginL)
         sb.append(",\"mR\":"); num(sb, d.marginR)
         sb.append(",\"mp\":").append(d.marginPaper)
@@ -139,7 +190,7 @@ object Store {
         sb.append(",\"sources\":[")
         for ((i, src) in d.sources.withIndex()) {
             if (i > 0) sb.append(',')
-            sb.append(JSONObject.quote(src.name))
+            sb.append(JSONObject.quote(src))
         }
         sb.append("],\"pages\":[")
         for ((i, page) in d.pages.withIndex()) {
@@ -158,8 +209,8 @@ object Store {
             for ((k, im) in page.images.withIndex()) {
                 if (k > 0) sb.append(',')
                 sb.append("{\"file\":").append(JSONObject.quote(im.file))
-                    .append(",\"iw\":").append(im.imgW)
-                    .append(",\"ih\":").append(im.imgH)
+                    .append(",\"iw\":").append(im.iw)
+                    .append(",\"ih\":").append(im.ih)
                 sb.append(",\"x\":"); num(sb, im.x)
                 sb.append(",\"y\":"); num(sb, im.y)
                 sb.append(",\"w\":"); num(sb, im.w)

@@ -3542,15 +3542,16 @@ class MainActivity : ComponentActivity() {
 
     private fun flushSaves(): Future<*>? {
         if (dirtyDocs.isEmpty()) return null
-        val jobs = dirtyDocs.filter { !it.closed }.map { File(it.dir, "state.json") to Store.serialize(it) }
+        // only a quick snapshot here (main thread); making the text and writing it happens on the save thread
+        val jobs = dirtyDocs.filter { !it.closed }.map { File(it.dir, "state.json") to Store.snapshot(it) }
         dirtyDocs.clear()
         if (jobs.isEmpty()) return null
         return try {
             ioExec.submit {
-                for ((f, text) in jobs) {
+                for ((f, snap) in jobs) {
                     try {
-                        if (f.parentFile?.exists() == true) Store.writeAtomic(f, text)
-                    } catch (e: Exception) {
+                        if (f.parentFile?.exists() == true) Store.writeAtomic(f, snap.toJson())
+                    } catch (e: Throwable) {
                         Log.e(TAG, "save failed", e)
                     }
                 }
