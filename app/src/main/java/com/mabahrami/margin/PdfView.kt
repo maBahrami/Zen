@@ -245,7 +245,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
     }
 
-    // ---- eraser circle: shows what the eraser covers, while erasing (and while the pen hovers in eraser mode) ----
+    // ---- eraser circle: shows what the eraser covers, only while the tip is down and erasing ----
     private var eraserVisible = false
     private var eraserX = 0f
     private var eraserY = 0f
@@ -265,16 +265,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         invalidate()
     }
 
-    /** S Pen hovering: in eraser mode (or with the side button held) the eraser circle follows it. */
+    /** S Pen hovering: the eraser circle shows only while the tip touches the screen, so hovering hides it. */
     override fun onHoverEvent(e: MotionEvent): Boolean {
-        val t = e.getToolType(0)
-        val pen = t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER
-        val erasing = eraserMode || t == MotionEvent.TOOL_TYPE_ERASER ||
-            (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
         when (e.actionMasked) {
-            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE ->
-                if (pen && erasing && !lassoMode && mode == MODE_NONE) showEraser(e.x, e.y) else if (mode != MODE_ERASE) hideEraser()
-            MotionEvent.ACTION_HOVER_EXIT -> if (mode != MODE_ERASE) hideEraser()
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_EXIT ->
+                if (mode != MODE_ERASE) hideEraser()
         }
         return super.onHoverEvent(e)
     }
