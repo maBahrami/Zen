@@ -38,6 +38,12 @@
         <item name="android:backgroundDimAmount">0.45</item>
     </style>
 
+    <!-- Dialog windows: no system grow-in (the app does its own), and a quick fade-out -->
+    <style name="ZenDialogAnim">
+        <item name="android:windowEnterAnimation">@anim/zen_dialog_enter</item>
+        <item name="android:windowExitAnimation">@anim/zen_dialog_exit</item>
+    </style>
+
     <style name="AppDialogTitle" parent="@android:style/TextAppearance.Material.Title">
         <item name="android:textSize">18sp</item>
         <item name="android:fontFamily">sans-serif-medium</item>

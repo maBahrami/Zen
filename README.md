@@ -2,13 +2,14 @@
 
 A minimal PDF annotator for the Samsung Galaxy Tab S9+ (S Pen), built for studying papers and lecture notes.
 
-**Version 1.1** · [Download the latest APK](https://github.com/maBahrami/Zen/releases/latest)
+**Version 1.2** · [Download the latest APK](https://github.com/maBahrami/Zen/releases/latest)
 
 ## Features
 
-- **Tabs** – several PDFs open at once; drag to reorder, hold to rename. The counter left of the tabs lists every open file: the current one is highlighted, tap to switch, swipe left or right to close. Files with unsaved changes show a dot and always ask before closing.
+- **Tabs** – several PDFs open at once; drag to reorder; tap the open tab again (or hold a tab) for its options, like rename. The counter left of the tabs lists every open file: the current one is highlighted, tap to switch, swipe left or right to close. Files with unsaved changes show a dot and always ask before closing.
+- **Side by side** – drag a tab onto another tab and rest there for a moment (it lights up blue), let go and confirm; or hold a tab and choose *Open side by side with this file* to pair it with the current file. The pair shares one capsule in the tab bar and opens side by side whenever you pick either of its files; any other tab opens full width while the pair stays grouped. Drag the handle between the two sides to change their widths, tap it for a swap button that switches the two files left and right, or hold it for half and half. Drag it to the far left or right and keep it there for a moment to ungroup. The active side has a thin blue outline; touching the other side makes it active, and the pen bar, menus and Undo act on the active side. Hold a tab for *Show on the other side* or *Ungroup side by side*.
 - **Margins** – add blank space left/right of every page or a single page, with a live preview; margins can be blank, lined or grid. The original page is never scaled, and a faint dashed outline shows its edge.
-- **Pages** – Samsung-Notes-style overview with thumbnails, a ⋮ menu per page, drag to reorder, and a + tile at the end. New pages can match the document or be A4/A5, portrait or landscape, blank, lined or grid, with a live preview. At the last page, pull further up and hold to add a page; it starts like the last page you added (or like the document's first page). Insert another PDF, delete pages, and see a dim page counter at the bottom right.
+- **Pages** – Samsung-Notes-style overview with thumbnails, a ⋮ menu per page, drag to reorder, and a + tile at the end. New pages can match the document or be A4/A5, portrait or landscape, blank, lined or grid, with a live preview. At the last page, pull further up and hold to add a page at the end (at the first page, pull down to add one before it); it starts like the last page you added (or like the document's first page). Insert another PDF, delete pages, and see a dim page counter at the bottom right.
 - **Pen** – solid, dashed or dotted; 7 colours; adjustable width with −/+ buttons; no pressure sensitivity; low-latency inking. Hold still at the end of a stroke to snap to a straight line, circle or rectangle.
 - **Highlighter** – freehand or straight (magnetic at 0°/90°), with its own colour and width memory. Multiply blending keeps text readable, and overlapping highlights don't get darker, on screen and in exported PDFs.
 - **Eraser and lasso** – stroke eraser (the S Pen side button erases too); lasso selection to move, copy, cut, recolour or delete.

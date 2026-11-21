@@ -59,8 +59,25 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     var onChange: ((Doc) -> Unit)? = null
-    /** Pulled up past the last page and held: the user wants a new page at the end. */
-    var onPullAddPage: (() -> Unit)? = null
+    /** A finger or pen just touched this view (side by side: makes it the active side before anything else). */
+    var onTouchStart: ((PdfView) -> Unit)? = null
+    /** Side by side: draw a thin blue outline to mark this as the active side. */
+    var activeMark = false
+        set(v) {
+            if (field != v) {
+                field = v
+                invalidate()
+            }
+        }
+    private val activeMarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0xCC0A84FF.toInt()
+    }
+    /**
+     * Pulled past the end and held: the user wants a new page. [atStart] = pulled down at the first page
+     * (new page before it); false = pulled up at the last page (new page at the end).
+     */
+    var onPullAddPage: ((atStart: Boolean) -> Unit)? = null
     /** Called when the selected image changes (null = nothing selected). */
     var onSelection: ((ImageItem?) -> Unit)? = null
     /** The page in the middle of the screen changed (for the page overview). */
@@ -291,16 +308,18 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private var longPressFired = false
     private val longPress = Runnable { onLongPress() }
 
-    // ---- pull up past the last page and hold to add a page ----
+    // ---- pull past the last page (up) or the first page (down) and hold to add a page ----
+    /** 1 = pulling up at the last page, -1 = pulling down at the first page. */
+    private var pullDir = 1
     /** How far the finger has pulled past the end (px); the content moves half of it (rubber band). */
     private var pullPx = 0f
     /** The pull has fired for this touch: ignore further pulling until the finger lifts. */
     private var pullDone = false
     /** When the pull first reached the threshold (uptime ms), or 0 while below it. */
     private var pullArmedAt = 0L
-    private val pullThresholdPx = 150f * density
-    private val pullMaxPx = 230f * density
-    private val pullHoldMs = 650L
+    private val pullThresholdPx = 90f * density
+    private val pullMaxPx = 150f * density
+    private val pullHoldMs = 400L
     private var pullAnim: android.animation.ValueAnimator? = null
     private val pullHold = Runnable { firePull() }
     private val pullCirclePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2C2C2E.toInt() }
@@ -360,6 +379,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         imgCache.evictAll()
         imgPending.clear()
         generation++
+        // switching to another file: its pages fade in softly instead of popping
+        if (doc != null && d != null && doc !== d && isShown) {
+            animate().cancel()
+            alpha = 0.25f
+            animate().alpha(1f).setDuration(200).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+        }
         if (doc !== d) {
             photoRects.clear()
             try {
@@ -371,8 +396,25 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         clearSelection()
         clearLasso()
         relayout()
+        if (d != null) adaptViewport(d)
         if (d != null && d.scale > 0f && width > 0) clamp(d)
         invalidate()
+    }
+
+    /**
+     * Keeps the zoom relative to the view's width when the width changes (side by side, dragging the
+     * divider, or a document moving to a narrower or wider side), so pages keep filling the view the same way.
+     */
+    private fun adaptViewport(d: Doc) {
+        if (width <= 0) return
+        if (d.scale > 0f && d.viewW > 0 && d.viewW != width && contentW > 0f) {
+            val ns = (d.scale * width / d.viewW).coerceIn(minScale(), MAX_SCALE)
+            val k = ns / d.scale
+            d.tx *= k
+            d.ty = topPx - (topPx - d.ty) * k // the content at the top stays at the top
+            d.scale = ns
+        }
+        d.viewW = width
     }
 
     private val penBusy: Boolean get() = mode != MODE_NONE && mode != MODE_NAV
@@ -881,6 +923,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         imgCache.evictAll()
     }
 
+    /** Side by side: each view gets a share (0..1] of the normal bitmap memory, so two views together never use more. */
+    fun setMemoryShare(share: Float) {
+        val f = share.coerceIn(0.1f, 1f)
+        cache.resize(max(32 * 1024 * 1024, (CACHE_BYTES * f).toInt()))
+        imgCache.resize(max(16 * 1024 * 1024, (IMG_CACHE_BYTES * f).toInt()))
+    }
+
     // ======================= layout =======================
 
     private fun pageFullW(d: Doc, i: Int) = d.leftOf(d.pages[i]) + d.pages[i].w + d.rightOf(d.pages[i])
@@ -927,6 +976,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         d.scale = ((width - 2 * edgePx) / contentW).coerceIn(0.05f, MAX_SCALE)
         d.tx = edgePx
         d.ty = topPx
+        d.viewW = width
         clamp(d)
     }
 
@@ -974,7 +1024,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        doc?.let { if (it.scale > 0f) clamp(it) }
+        doc?.let {
+            adaptViewport(it)
+            if (it.scale > 0f) clamp(it)
+        }
         invalidate()
     }
 
@@ -1014,7 +1067,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val pullOff = pullOffset()
         if (pullOff > 0f) {
             canvas.save()
-            canvas.translate(0f, -pullOff)
+            canvas.translate(0f, -pullOff * pullDir)
         }
 
         canvas.save()
@@ -1137,6 +1190,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (cur != lastReportedPage) {
             lastReportedPage = cur
             onCurrentPage?.invoke(cur)
+        }
+        if (activeMark) {
+            val w = 2f * density
+            activeMarkPaint.strokeWidth = w
+            canvas.drawRect(w / 2f, w / 2f, width - w / 2f, height - w / 2f, activeMarkPaint)
         }
     }
 
@@ -1547,6 +1605,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (e.actionMasked == MotionEvent.ACTION_DOWN) onTouchStart?.invoke(this)
         val d = doc ?: return true
         if (d.scale <= 0f) return true
         when (e.actionMasked) {
@@ -1654,14 +1713,18 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         val dy = focusY - lastFy
                         if (pullPx > 0f && !multiTouch && !pullDone) {
                             // already pulling past the end: the finger changes the pull first
-                            setPull(pullPx - dy)
+                            setPull(pullPx - dy * pullDir)
                         } else {
                             val wanted = d.ty + dy
                             d.ty = wanted
                             clamp(d)
                             // the end stopped the scroll while pulling up: start pulling
-                            if (!multiTouch && !pullDone && d.pageCount > 0 && dy < 0f && d.ty > wanted + 0.5f) {
-                                setPull(d.ty - wanted)
+                            if (!multiTouch && !pullDone && d.pageCount > 0) {
+                                if (dy < 0f && d.ty > wanted + 0.5f) {
+                                    pullDir = 1; setPull(d.ty - wanted)          // past the last page
+                                } else if (dy > 0f && d.ty < wanted - 0.5f) {
+                                    pullDir = -1; setPull(wanted - d.ty)         // past the first page
+                                }
                             }
                         }
                         if (multiTouch && pullPx > 0f) resetPull(animate = true)
@@ -1975,7 +2038,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 pullArmedAt = SystemClock.uptimeMillis()
                 removeCallbacks(pullHold)
                 postDelayed(pullHold, pullHoldMs)
-                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                vibrate(18L, 90) // light tick: far enough, now hold
             }
         } else if (pullArmedAt != 0L) {
             pullArmedAt = 0L
@@ -2011,18 +2074,39 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         pullArmedAt = 0L
         if (pullDone || pullPx < pullThresholdPx || mode != MODE_NAV || multiTouch || doc == null) return
         pullDone = true // one page per pull; lift the finger to pull again
-        performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        vibrate(40L, 220) // firmer buzz: the page window opens
         resetPull(animate = true)
-        onPullAddPage?.invoke()
+        onPullAddPage?.invoke(pullDir < 0)
     }
 
-    /** Round "+" below the last page; its ring fills while the user holds the pull. */
+    /** Short vibration ([amplitude] 1..255; ignored where the motor can't vary it). Never throws. */
+    private fun vibrate(ms: Long, amplitude: Int) {
+        try {
+            val v = if (android.os.Build.VERSION.SDK_INT >= 31) {
+                (context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            }
+            if (v == null || !v.hasVibrator()) return
+            val amp = if (v.hasAmplitudeControl()) amplitude.coerceIn(1, 255) else android.os.VibrationEffect.DEFAULT_AMPLITUDE
+            v.vibrate(android.os.VibrationEffect.createOneShot(ms, amp))
+        } catch (t: Throwable) {
+            // no vibration is fine
+        }
+    }
+
+    /**
+     * Round "+" in the space opened below the last page (or above the first); its ring fills while the
+     * user holds the pull.
+     */
     private fun drawPullIndicator(canvas: Canvas, off: Float) {
         val frac = (pullPx / pullThresholdPx).coerceIn(0f, 1f)
         val r = 20f * density
-        val cx = width / 2f
-        val cy = height - off / 2f - 8f * density
-        if (cy + r < 0f) return
+        val atTop = pullDir < 0
+        val cx = if (atTop) width / 2f - 70f * density else width / 2f
+        val cy = if (atTop) topPx + off / 2f + 4f * density else height - off / 2f - 8f * density
+        if (cy + r < 0f || cy - r > height) return
         val alpha = (frac * 255).toInt()
         pullCirclePaint.alpha = alpha
         canvas.drawCircle(cx, cy, r, pullCirclePaint)
@@ -2049,7 +2133,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         pullTextPaint.textSize = 13f * density
         pullTextPaint.alpha = alpha
         val label = if (armed) "Keep holding to add a page" else if (pullDone) "" else "Pull and hold to add a page"
-        if (label.isNotEmpty() && cy - r - 10f * density > 0f) canvas.drawText(label, cx, cy - r - 10f * density, pullTextPaint)
+        if (label.isEmpty()) return
+        if (atTop) {
+            // beside the circle: above it is the toolbar, below it the first page
+            pullTextPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(label, cx + r + 12f * density, cy + pullTextPaint.textSize * 0.35f, pullTextPaint)
+            pullTextPaint.textAlign = Paint.Align.CENTER
+        } else if (cy - r - 10f * density > 0f) {
+            canvas.drawText(label, cx, cy - r - 10f * density, pullTextPaint)
+        }
     }
 
     override fun computeScroll() {

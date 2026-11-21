@@ -323,6 +323,9 @@ class Doc(
     /** Dark view (display only: never changes what Save or Export writes). */
     var dark = false
 
+    /** Width (px) of the view the viewport was last fitted to; 0 = unknown. Not saved. */
+    var viewW = 0
+
     // Viewport (scale 0 = not initialised yet)
     var scale = 0f
     var tx = 0f

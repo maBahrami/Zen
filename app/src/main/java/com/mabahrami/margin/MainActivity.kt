@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.content.res.ColorStateList
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -36,7 +37,6 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -90,7 +90,16 @@ class MainActivity : ComponentActivity() {
     private val docs = ArrayList<Doc>()
     private var active: Doc? = null
 
+    /** The active side's canvas (the only one when not side by side). Pen bar, menus and Undo act on it. */
     private lateinit var pdfView: PdfView
+    /** Left (or only) canvas and right canvas; the right one is shown only side by side. */
+    private lateinit var paneA: PdfView
+    private lateinit var paneB: PdfView
+    private lateinit var splitHandle: View
+    /** Two documents side by side. */
+    private var split = false
+    /** Width share of the left side (0.2 .. 0.8). */
+    private var splitRatio = 0.5f
     private lateinit var tabBar: LinearLayout
     private lateinit var tabScroll: HorizontalScrollView
     private lateinit var tabCount: TextView
@@ -204,28 +213,10 @@ class MainActivity : ComponentActivity() {
         pendingExportId = savedInstanceState?.getString("pendingExport")
         pendingInsertId = savedInstanceState?.getString("pendingInsert")
         pendingCameraPath = savedInstanceState?.getString("pendingCamera")
-        pdfView = PdfView(this, renderExec)
-        pdfView.onChange = { d ->
-            markDirty(d)
-            updateButtons()
-            if (pagesPanel.visibility == View.VISIBLE) pagesPanel.refresh()
-            updatePageBadge()
-        }
-        pdfView.onSelection = { item -> updateSelBar(item) }
-        pdfView.onLongPressPage = { x, y, pt -> showPageMenu(x, y, pt) }
-        pdfView.onSelectionRect = { l, t, r, b -> placeSelBar(l, t, r, b) }
-        pdfView.onLassoRect = { r ->
-            if (r == null) lassoBar.visibility = View.GONE
-            else {
-                lassoBar.visibility = View.VISIBLE
-                placeBar(lassoBar, r.left, r.top, r.right, r.bottom)
-            }
-        }
-        pdfView.onPullAddPage = { active?.let { askNewPage(it.pageCount, likeDoc = true) } }
-        pdfView.onCurrentPage = { i ->
-            if (pagesPanel.visibility == View.VISIBLE) pagesPanel.setCurrent(i)
-            updatePageBadge(i)
-        }
+        paneA = makePane()
+        paneB = makePane()
+        pdfView = paneA
+        splitRatio = prefs.getFloat("split_ratio", 0.5f).coerceIn(0.2f, 0.8f)
         setContentView(buildUi())
         loadTool()
         // "focus" (on/off) is the setting from v1.0: on meant everything hidden
@@ -239,6 +230,48 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "purge", e)
             }
         }
+    }
+
+    /**
+     * One canvas. Both sides share these callbacks; anything that drives the bars, menus or page counter
+     * only listens to the active side (the other side just keeps its document's autosave going).
+     */
+    private fun makePane(): PdfView {
+        val v = PdfView(this, renderExec)
+        v.onTouchStart = { pane ->
+            hideSwapButton()
+            if (split && pane !== pdfView) switchPane(pane)
+        }
+        v.onChange = { d ->
+            markDirty(d)
+            if (v === pdfView) {
+                updateButtons()
+                if (pagesPanel.visibility == View.VISIBLE) pagesPanel.refresh()
+                updatePageBadge()
+            }
+        }
+        v.onSelection = { item -> if (v === pdfView) updateSelBar(item) }
+        v.onLongPressPage = { x, y, pt -> if (v === pdfView) showPageMenu(x + v.left, y, pt) }
+        v.onSelectionRect = { l, t, r, b -> if (v === pdfView) placeSelBar(l, t, r, b) }
+        v.onLassoRect = { r ->
+            if (v === pdfView) {
+                if (r == null) lassoBar.visibility = View.GONE
+                else {
+                    popIn(lassoBar)
+                    placeBar(lassoBar, r.left, r.top, r.right, r.bottom)
+                }
+            }
+        }
+        v.onPullAddPage = { atStart ->
+            if (v === pdfView) active?.let { askNewPage(if (atStart) 0 else it.pageCount, likeDoc = true) }
+        }
+        v.onCurrentPage = { i ->
+            if (v === pdfView) {
+                if (pagesPanel.visibility == View.VISIBLE) pagesPanel.setCurrent(i)
+                updatePageBadge(i)
+            }
+        }
+        return v
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -272,14 +305,18 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) pdfView.trimCache()
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            paneA.trimCache()
+            paneB.trimCache()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         main.removeCallbacks(flushRunnable)
         val all = ArrayList(docs)
-        pdfView.release()
+        paneA.release()
+        paneB.release()
         renderExec.execute { for (d in all) d.closeRenderer() }
         renderExec.shutdown()
         ioExec.shutdown()
@@ -437,7 +474,14 @@ class MainActivity : ComponentActivity() {
 
         // ---- canvas with floating tool palette and image bar ----
         val stage = FrameLayout(this)
-        stage.addView(pdfView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // two canvases side by side (the right one and the handle only when two documents are shown)
+        val paneRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        paneRow.addView(paneA, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        splitHandle = makeSplitHandle(paneRow).apply { visibility = View.GONE }
+        paneRow.addView(splitHandle, LinearLayout.LayoutParams(dp(14), ViewGroup.LayoutParams.MATCH_PARENT))
+        paneB.visibility = View.GONE
+        paneRow.addView(paneB, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        stage.addView(paneRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         pressAnchor = View(this)
         stage.addView(pressAnchor, FrameLayout.LayoutParams(dp(1), dp(1), Gravity.TOP or Gravity.START))
 
@@ -691,6 +735,7 @@ class MainActivity : ComponentActivity() {
      * Level 0 shows everything again.
      */
     private fun setFocusLevel(level: Int) {
+        if (level.coerceIn(0, 2) != focusLevel) smoothLayout()
         focusLevel = level.coerceIn(0, 2)
         prefs.edit().putInt("focus_level", focusLevel).remove("focus").apply()
         val full = focusLevel == 2
@@ -726,6 +771,10 @@ class MainActivity : ComponentActivity() {
         val d = active ?: return
         d.dark = !d.dark
         pdfView.invalidate()
+        // a soft fade between light and dark
+        pdfView.animate().cancel()
+        pdfView.alpha = 0.4f
+        pdfView.animate().alpha(1f).setDuration(220).start()
         if (pagesPanel.visibility == View.VISIBLE) pagesPanel.refresh()
         updateDarkButton()
         markDirty(d) // remembers the choice in the working state (doesn't mark the file unsaved)
@@ -750,8 +799,7 @@ class MainActivity : ComponentActivity() {
             background = glass(14)
             elevation = dp(10).toFloat()
         }
-        val popup = android.widget.PopupWindow(box, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
-        popup.elevation = dp(10).toFloat()
+        val popup = GeniePop(box)
         fun choice(icon: Int, desc: String, straight: Boolean) {
             val v = iconButton(icon, desc) {
                 pdfView.hlStraight = straight
@@ -775,8 +823,7 @@ class MainActivity : ComponentActivity() {
             background = glass(14)
             elevation = dp(10).toFloat()
         }
-        val popup = android.widget.PopupWindow(box, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
-        popup.elevation = dp(10).toFloat()
+        val popup = GeniePop(box)
         fun choice(icon: Int, desc: String, style: Int) {
             val v = iconButton(icon, desc) {
                 pdfView.penStyle = style
@@ -814,8 +861,7 @@ class MainActivity : ComponentActivity() {
             background = glass(14)
             elevation = dp(10).toFloat()
         }
-        val popup = android.widget.PopupWindow(box, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
-        popup.elevation = dp(10).toFloat()
+        val popup = GeniePop(box)
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             background = rounded(Color.TRANSPARENT, 7)
@@ -929,78 +975,266 @@ class MainActivity : ComponentActivity() {
         if (docs.any { shownUnsaved[it.id] != it.unsaved }) rebuildTabs()
     }
 
-    /** Safari-style tabs: the active one is a soft pill, others are quiet text. */
+    /**
+     * Tabs in order, as units: a single file, or the side-by-side pair (left, right) kept together.
+     * Each unit is one child of the tab bar, so reordering moves a pair as a whole.
+     */
+    private fun tabUnits(): List<List<Doc>> {
+        val out = ArrayList<List<Doc>>()
+        var k = 0
+        while (k < docs.size) {
+            val d = docs[k]
+            val next = docs.getOrNull(k + 1)
+            val p = pairOf(d)
+            if (p != null && d === p.left && next != null && next === p.right) {
+                out.add(listOf(d, next)); k += 2
+            } else {
+                out.add(listOf(d)); k += 1
+            }
+        }
+        return out
+    }
+
+    /** Safari-style tabs: the active one is a soft pill, others are quiet text. The side-by-side pair shares one capsule. */
     private fun rebuildTabs() {
         tabBar.removeAllViews()
         shownUnsaved.clear()
-        for (d in docs) {
-            shownUnsaved[d.id] = d.unsaved
-            val isActive = d === active
-            val tab = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), 0, dp(4), 0)
-                background = RippleDrawable(
-                    ColorStateList.valueOf(0x22FFFFFF),
-                    if (isActive) rounded(SURFACE2, 10) else null,
-                    rounded(Color.WHITE, 10),
-                )
-                isClickable = true
-                setOnClickListener { activate(d) }
-                // hold to pick the tab up, then drag sideways to reorder
-                setOnLongClickListener { v -> startTabDrag(v, d); true }
-                setOnTouchListener { v, e -> handleTabDrag(v, d, e) }
-            }
-            if (d.unsaved) {
-                tab.addView(View(this).apply { background = oval(if (isActive) ACCENT else TEXT_DIM) },
-                    LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(7) })
-            }
-            tab.addView(TextView(this).apply {
-                text = baseName(d.name)
-                textSize = 13f
-                setTextColor(if (isActive) TEXT else TEXT_DIM)
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                // long names are shortened in the middle; the active tab gets a bit more room
-                maxWidth = dp(if (isActive) 200 else if (docs.size > 5) 110 else 150)
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.MIDDLE
-            })
-            if (isActive) {
-                // only the active tab can be closed, so a stray tap on another tab just switches to it
-                tab.addView(ImageView(this).apply {
-                    setImageResource(R.drawable.ic_close)
-                    imageTintList = ColorStateList.valueOf(TEXT_DIM)
-                    contentDescription = "Close tab"
-                    setPadding(dp(7), dp(7), dp(7), dp(7))
+        for (unit in tabUnits()) {
+            if (unit.size == 1) {
+                val tab = makeTab(unit[0], null)
+                tabBar.addView(tab, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(30)
+                ).apply { marginEnd = dp(4) })
+            } else {
+                // a pair: both names next to each other in one outlined capsule (blue while shown side by side)
+                val pair = pairOf(unit[0])
+                val onScreen = split && pair != null && pair === shownPair
+                val group = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(2), dp(2), dp(2), dp(2))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(12).toFloat()
+                        setColor(if (onScreen) 0x1A0A84FF else 0x0DFFFFFF)
+                        setStroke(dp(1), if (onScreen) 0x990A84FF.toInt() else 0x40FFFFFF)
+                    }
+                    contentDescription = "Side by side: ${baseName(unit[0].name)} and ${baseName(unit[1].name)}"
+                }
+                // the pair's icon: tap it to ungroup
+                group.addView(ImageView(this).apply {
+                    setImageResource(R.drawable.ic_side_by_side)
+                    imageTintList = ColorStateList.valueOf(if (onScreen) ACCENT else TEXT_DIM)
+                    setPadding(dp(6), dp(6), dp(4), dp(6))
+                    contentDescription = "Side by side options"
+                    tooltipText = "Side by side options"
                     background = ripple()
                     isClickable = true
-                    setOnClickListener { confirmClose(d) }
-                }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginStart = dp(12) })
-            } else {
-                tab.setPadding(dp(14), 0, dp(14), 0)
+                    setOnClickListener { v -> pair?.let { showPairMenu(v, it) } }
+                }, LinearLayout.LayoutParams(dp(28), dp(26)))
+                for ((k, d) in unit.withIndex()) {
+                    if (k > 0) group.addView(View(this).apply { setBackgroundColor(0x40FFFFFF) },
+                        LinearLayout.LayoutParams(1, dp(14)).apply { marginStart = dp(1); marginEnd = dp(1) })
+                    group.addView(makeTab(d, group), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(26)))
+                }
+                tabBar.addView(group, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(30)
+                ).apply { marginEnd = dp(4) })
             }
-            tabBar.addView(tab, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(30)
-            ).apply { marginEnd = dp(4) })
         }
         afterTabsBuilt()
     }
 
-    /** Hold a tab and let go without dragging: Rename / Close. */
-    private fun showTabMenu(anchor: View, d: Doc) {
-        val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, "Rename…")
-        pm.menu.add(0, 2, 1, "Close tab")
-        pm.setOnMenuItemClickListener { item ->
-            if (docs.contains(d)) {
-                when (item.itemId) {
-                    1 -> showRenameDialog(d)
-                    2 -> confirmClose(d)
-                }
-            }
-            true
+    /** One tab. [dragView]: the view that moves when the tab is dragged (its pair's capsule), or null for the tab itself. */
+    private fun makeTab(d: Doc, dragView: View?): View {
+        shownUnsaved[d.id] = d.unsaved
+        val isActive = d === active
+        val tab = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), 0, dp(4), 0)
+            background = RippleDrawable(
+                ColorStateList.valueOf(0x22FFFFFF),
+                if (isActive) rounded(SURFACE2, 10) else null,
+                rounded(Color.WHITE, 10),
+            )
+            isClickable = true
+            // first tap opens the file; a tap on the file that's already open shows its options
+            setOnClickListener { v -> if (d === active) showTabMenu(v, d) else activate(d) }
+            // hold to pick the tab (or its pair) up, then drag sideways to reorder
+            setOnLongClickListener { v -> startTabDrag(dragView ?: v, d); true }
+            setOnTouchListener { v, e -> handleTabDrag(dragView ?: v, d, e) }
         }
-        pm.show()
+        if (d.unsaved) {
+            tab.addView(View(this).apply { background = oval(if (isActive) ACCENT else TEXT_DIM) },
+                LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(7) })
+        }
+        tab.addView(TextView(this).apply {
+            text = baseName(d.name)
+            textSize = 13f
+            setTextColor(if (isActive) TEXT else TEXT_DIM)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            // long names are shortened in the middle; the active tab gets a bit more room
+            maxWidth = dp(if (isActive) 200 else if (docs.size > 5) 110 else 150)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+        })
+        if (isActive) {
+            // only the active tab can be closed, so a stray tap on another tab just switches to it
+            tab.addView(ImageView(this).apply {
+                setImageResource(R.drawable.ic_close)
+                imageTintList = ColorStateList.valueOf(TEXT_DIM)
+                contentDescription = "Close tab"
+                setPadding(dp(7), dp(7), dp(7), dp(7))
+                background = ripple()
+                isClickable = true
+                setOnClickListener { confirmClose(d) }
+            }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginStart = dp(12) })
+        } else {
+            tab.setPadding(dp(14), 0, dp(14), 0)
+        }
+        return tab
+    }
+
+    /** Tap on the pair's icon in the tab bar. */
+    private fun showPairMenu(anchor: View, pair: DocPair) {
+        if (!pairs.contains(pair)) return
+        // if the pair is on screen, the file you were working in stays, full width
+        showGenieMenu(anchor, listOf(GItem("Ungroup side by side") {
+            if (pairs.contains(pair)) ungroup(pair, keep = if (pairOf(active) === pair) active else null)
+        }))
+    }
+
+    /** Moves the tab unit holding [d] one place left (-1) or right (+1); the docs order follows. */
+    private fun moveUnit(d: Doc, dir: Int) {
+        val units = tabUnits().toMutableList()
+        val i = units.indexOfFirst { u -> u.any { it === d } }
+        val j = i + dir
+        if (i < 0 || j !in units.indices) return
+        java.util.Collections.swap(units, i, j)
+        docs.clear()
+        for (u in units) docs.addAll(u)
+    }
+
+    /** Options for a tab: tap the open file's tab again, or hold a tab and let go without dragging. */
+    private fun showTabMenu(anchor: View, d: Doc) {
+        val items = ArrayList<GItem>()
+        // every action re-checks: the tab may have changed while the menu was open
+        items.add(GItem("Rename…") { if (docs.contains(d)) showRenameDialog(d) })
+        if (!split && d !== active && active != null) {
+            items.add(GItem("Open side by side with this file") { if (docs.contains(d) && !split && d !== active) openSideBySide(d) })
+        }
+        if (split && !inPair(d)) {
+            items.add(GItem("Show on the other side") { if (docs.contains(d) && split && !inPair(d)) showOnOtherSide(d) })
+        }
+        if (inPair(d)) {
+            items.add(GItem("Ungroup side by side") {
+                pairOf(d)?.let { p -> ungroup(p, keep = if (pairOf(active) === p) active else null) }
+            })
+        }
+        items.add(GItem("Close tab") { if (docs.contains(d)) confirmClose(d) })
+        showGenieMenu(anchor, items)
+    }
+
+    /** One row of a genie menu. */
+    private class GItem(val label: String, val enabled: Boolean = true, val color: Int = 0, val action: () -> Unit)
+
+    /**
+     * A popup that flows out of its anchor like the macOS genie effect and back into it when it closes
+     * (a tap outside, or [dismiss]). Same calls as a PopupWindow, so every popup in the app uses it.
+     */
+    private inner class GeniePop(private val content: View, widthPx: Int = ViewGroup.LayoutParams.WRAP_CONTENT) {
+        private val genie = GenieLayout(this@MainActivity).apply { setPadding(dp(10), dp(4), dp(10), dp(14)) } // shadow room
+        private val window: android.widget.PopupWindow
+        private val source = RectF()
+        private var closing = false
+
+        init {
+            content.visibility = View.INVISIBLE // shown by the opening animation
+            genie.addView(content, FrameLayout.LayoutParams(widthPx, ViewGroup.LayoutParams.WRAP_CONTENT))
+            window = android.widget.PopupWindow(genie, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, true)
+            window.animationStyle = 0 // the genie effect replaces the system animation
+            window.isOutsideTouchable = true
+            // a tap outside flows the popup back into its anchor instead of just vanishing
+            window.setTouchInterceptor { _, e ->
+                if (e.action == MotionEvent.ACTION_OUTSIDE) {
+                    dismiss(); true
+                } else false
+            }
+        }
+
+        val isShowing: Boolean get() = window.isShowing
+
+        fun showAsDropDown(anchor: View, xoff: Int, yoff: Int) {
+            if (!anchor.isAttachedToWindow) return
+            try {
+                window.showAsDropDown(anchor, xoff - dp(10), yoff - dp(4)) // the padding keeps the content where it was
+            } catch (e: Exception) {
+                return
+            }
+            // start on the first frame, once measured (nothing is drawn before the animation)
+            genie.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (genie.viewTreeObserver.isAlive) genie.viewTreeObserver.removeOnPreDrawListener(this)
+                    if (genie.isAttachedToWindow && !closing) {
+                        val a = IntArray(2)
+                        val g = IntArray(2)
+                        genie.getLocationOnScreen(g)
+                        if (anchor.isAttachedToWindow) {
+                            anchor.getLocationOnScreen(a)
+                            source.set((a[0] - g[0]).toFloat(), (a[1] - g[1]).toFloat(),
+                                (a[0] - g[0] + anchor.width).toFloat(), (a[1] - g[1] + anchor.height).toFloat())
+                        } else {
+                            source.set(content.left.toFloat(), 0f, content.right.toFloat(), 0f)
+                        }
+                        genie.open(source, content)
+                    } else content.visibility = View.VISIBLE
+                    return true
+                }
+            })
+        }
+
+        /** Flows back into the anchor, closes, then runs [then]. */
+        fun dismiss(then: (() -> Unit)? = null) {
+            if (closing) return
+            closing = true
+            if (!window.isShowing) {
+                then?.invoke(); return
+            }
+            genie.close(source, content) {
+                try {
+                    if (window.isShowing) window.dismiss()
+                } catch (ignored: Exception) {
+                }
+                then?.invoke()
+            }
+        }
+    }
+
+    /** A menu of text rows in a genie popup; the chosen action runs once the menu has gone back. */
+    private fun showGenieMenu(anchor: View, items: List<GItem>) {
+        if (items.isEmpty() || !anchor.isAttachedToWindow) return
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = glass(14)
+            elevation = dp(10).toFloat()
+            minimumWidth = dp(210)
+        }
+        val pop = GeniePop(box)
+        for (item in items) {
+            box.addView(TextView(this).apply {
+                text = item.label
+                textSize = 14f
+                setTextColor(if (!item.enabled) TEXT_DIM else if (item.color != 0) item.color else TEXT)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                if (item.enabled) {
+                    background = RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), null, rounded(Color.WHITE, 9))
+                    isClickable = true
+                    setOnClickListener { pop.dismiss(item.action) }
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        pop.showAsDropDown(anchor, 0, 0)
     }
 
     private fun showRenameDialog(d: Doc) {
@@ -1032,8 +1266,7 @@ class MainActivity : ComponentActivity() {
             .setNegativeButton("Cancel", null)
             .create()
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
-        dialog.show()
-        compact(dialog, 360)
+        compactShow(dialog, 360)
         input.requestFocus()
     }
 
@@ -1073,7 +1306,7 @@ class MainActivity : ComponentActivity() {
     private fun afterTabsBuilt() {
         tabCount.text = docs.size.toString()
         tabCount.visibility = if (docs.size >= 2) View.VISIBLE else View.GONE
-        val i = docs.indexOf(active)
+        val i = tabUnits().indexOfFirst { u -> u.any { it === active } }
         if (i < 0) return
         tabBar.post {
             val v = tabBar.getChildAt(i) ?: return@post
@@ -1094,8 +1327,7 @@ class MainActivity : ComponentActivity() {
             background = glass(14)
             elevation = dp(10).toFloat()
         }
-        val popup = android.widget.PopupWindow(box, dp(300), ViewGroup.LayoutParams.WRAP_CONTENT, true)
-        popup.elevation = dp(10).toFloat()
+        val popup = GeniePop(box, dp(300))
         box.addView(TextView(this).apply {
             text = "Swipe a file left or right to close it"
             textSize = 11f
@@ -1196,6 +1428,47 @@ class MainActivity : ComponentActivity() {
     private var tabDragStartRawX = 0f
     private var tabDragMoved = false
 
+    // dragging a tab onto another one (and resting there) offers to show the two side by side
+    private var dropTarget: Doc? = null
+    private var dropTargetView: View? = null
+    private var dropArmed = false
+    private val armDrop = Runnable {
+        val v = dropTargetView ?: return@Runnable
+        if (dropTarget == null) return@Runnable
+        dropArmed = true
+        // the target lights up: let go here to be asked
+        v.foreground = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(0x330A84FF)
+            setStroke(dp(2), ACCENT)
+        }
+        v.animate().scaleX(1.06f).scaleY(1.06f).setDuration(120).start()
+        v.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+    }
+
+    private fun clearDropTarget() {
+        main.removeCallbacks(armDrop)
+        dropTargetView?.let {
+            it.foreground = null
+            it.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+        }
+        dropTarget = null
+        dropTargetView = null
+        dropArmed = false
+    }
+
+    /** Asked only after dropping a tab onto another one. */
+    private fun askSideBySideFromDrop(dragged: Doc, target: Doc) {
+        if (!docs.contains(dragged) || !docs.contains(target) || dragged === target) return
+        AlertDialog.Builder(this)
+            .setTitle("Show side by side?")
+            .setMessage("“${baseName(target.name)}” on the left and “${baseName(dragged.name)}” on the right, grouped in one tab.")
+            .setPositiveButton("Show side by side") { _, _ -> groupPair(target, dragged, focus = dragged) }
+            .setNegativeButton("Cancel", null)
+            .create()
+            .let { compactShow(it, 360) }
+    }
+
     private fun startTabDrag(v: View, d: Doc) {
         draggingTab = d
         tabDragMoved = false
@@ -1206,7 +1479,10 @@ class MainActivity : ComponentActivity() {
         v.animate().scaleX(1.06f).scaleY(1.06f).alpha(0.92f).setDuration(120).start()
     }
 
-    /** Moves the held tab with the finger and swaps it with a neighbour once it passes the neighbour's middle. */
+    /**
+     * Moves the held tab with the finger. Passing most of a neighbour swaps them; resting over the middle
+     * of another single tab for a moment lights it up, and letting go there asks about side by side.
+     */
     private fun handleTabDrag(v: View, d: Doc, e: MotionEvent): Boolean {
         if (e.actionMasked == MotionEvent.ACTION_DOWN) tabDragLastRawX = e.rawX
         if (draggingTab !== d) return false // normal tap / long-press handling
@@ -1217,25 +1493,48 @@ class MainActivity : ComponentActivity() {
                 tabDragLastRawX = e.rawX
                 val i = tabBar.indexOfChild(v)
                 val centre = v.left + v.translationX + v.width / 2f
+                // over the middle of another single tab: a drop target (only single tabs, not a pair)
+                val units = tabUnits()
+                var target: Doc? = null
+                var targetView: View? = null
+                if (units.getOrNull(i)?.size == 1) {
+                    for (k in 0 until tabBar.childCount) {
+                        if (k == i) continue
+                        val c = tabBar.getChildAt(k)
+                        val u = units.getOrNull(k) ?: continue
+                        if (u.size == 1 && centre > c.left + c.width * 0.25f && centre < c.left + c.width * 0.75f) {
+                            target = u[0]; targetView = c; break
+                        }
+                    }
+                }
+                if (target !== dropTarget) {
+                    clearDropTarget()
+                    if (target != null) {
+                        dropTarget = target
+                        dropTargetView = targetView
+                        main.postDelayed(armDrop, 450)
+                    }
+                }
+                // reorder only once the tab has passed most of its neighbour (the middle is for dropping)
                 if (i + 1 < tabBar.childCount) {
                     val next = tabBar.getChildAt(i + 1)
-                    if (centre > next.left + next.width / 2f) {
+                    if (centre > next.left + next.width * 0.75f) {
+                        clearDropTarget()
                         val shift = next.width + ((next.layoutParams as? ViewGroup.MarginLayoutParams)?.marginEnd ?: 0)
                         tabBar.removeViewAt(i + 1)
                         tabBar.addView(next, i)
-                        val di = docs.indexOf(d)
-                        if (di >= 0 && di + 1 < docs.size) java.util.Collections.swap(docs, di, di + 1)
+                        moveUnit(d, 1)
                         v.translationX -= shift
                     }
                 }
                 if (i - 1 >= 0) {
                     val prev = tabBar.getChildAt(i - 1)
-                    if (centre < prev.left + prev.width / 2f) {
+                    if (centre < prev.left + prev.width * 0.25f) {
+                        clearDropTarget()
                         val shift = prev.width + ((prev.layoutParams as? ViewGroup.MarginLayoutParams)?.marginEnd ?: 0)
                         tabBar.removeViewAt(i - 1)
                         tabBar.addView(prev, i)
-                        val di = docs.indexOf(d)
-                        if (di > 0) java.util.Collections.swap(docs, di, di - 1)
+                        moveUnit(d, -1)
                         v.translationX += shift
                     }
                 }
@@ -1243,6 +1542,16 @@ class MainActivity : ComponentActivity() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 draggingTab = null
                 v.elevation = 0f
+                val dropOn = if (dropArmed && e.actionMasked == MotionEvent.ACTION_UP) dropTarget else null
+                clearDropTarget()
+                if (dropOn != null) {
+                    // dropped onto another tab: ask (this is the only way side by side asks first)
+                    v.animate().translationX(0f).scaleX(1f).scaleY(1f).alpha(1f).setDuration(150)
+                        .withEndAction { rebuildTabs() }.start()
+                    saveSession()
+                    askSideBySideFromDrop(d, dropOn)
+                    return true
+                }
                 val justHeld = !tabDragMoved && e.actionMasked == MotionEvent.ACTION_UP
                 v.animate().translationX(0f).scaleX(1f).scaleY(1f).alpha(1f).setDuration(150)
                     .withEndAction { if (!justHeld) rebuildTabs() }.start()
@@ -1266,18 +1575,410 @@ class MainActivity : ComponentActivity() {
 
     // ======================= tabs =======================
 
+    /**
+     * Shows [d]. A file of the side-by-side pair opens the pair (with [d] as the active side);
+     * any other file opens full width, and the pair stays together for later.
+     */
     private fun activate(d: Doc) {
-        if (active !== d) {
+        val before = active
+        if (inPair(d)) {
+            showPair(d)
+        } else {
+            if (split) leaveSplitView()
             active = d
-            pdfView.setDoc(d)
-            if (pagesPanel.visibility == View.VISIBLE) {
-                pagesPanel.setDoc(d)
-                pagesPanel.setCurrent(pdfView.currentPageIndex())
-            }
+            if (paneA.doc !== d) pdfView.setDoc(d)
+        }
+        if (active !== before && pagesPanel.visibility == View.VISIBLE) {
+            pagesPanel.setDoc(active)
+            pagesPanel.setCurrent(pdfView.currentPageIndex())
         }
         updatePageBadge()
         rebuildTabs()
         updateButtons()
+        saveSession()
+    }
+
+    // ======================= side by side =======================
+
+    /** Two files grouped side by side (left, right). A pair stays together until ungrouped or closed. */
+    private class DocPair(var left: Doc, var right: Doc)
+
+    /** All side-by-side groups; any number of them, each of exactly two files. */
+    private val pairs = ArrayList<DocPair>()
+
+    /** The pair on screen right now (side by side), or null. */
+    private var shownPair: DocPair? = null
+
+    private fun pairOf(d: Doc?): DocPair? = if (d == null) null else pairs.firstOrNull { it.left === d || it.right === d }
+
+    private fun inPair(d: Doc?) = pairOf(d) != null
+
+    private fun otherPane(): PdfView = if (pdfView === paneA) paneB else paneA
+
+    /** Pen bar settings follow the active side. */
+    private fun copyTools(from: PdfView, to: PdfView) {
+        to.penColor = from.penColor
+        to.penWidth = from.penWidth
+        to.penStyle = from.penStyle
+        to.highlighter = from.highlighter
+        to.hlStraight = from.hlStraight
+        to.eraserMode = from.eraserMode
+        to.lassoMode = from.lassoMode
+    }
+
+    /** Clears the active side's image / lasso selection (their bars belong to that side). */
+    private fun dropSelection() {
+        pdfView.clearSelection()
+        pdfView.clearLasso()
+        selBar.visibility = View.GONE
+        lassoBar.visibility = View.GONE
+    }
+
+    /** Makes [v] the active canvas (tools move along). Doesn't touch tabs or panels. */
+    private fun usePane(v: PdfView) {
+        if (v === pdfView) return
+        dropSelection()
+        copyTools(pdfView, v)
+        pdfView = v
+        paneA.activeMark = split && v === paneA
+        paneB.activeMark = split && v === paneB
+    }
+
+    /** Shows the pair side by side, with [d]'s side active. */
+    private fun showPair(d: Doc) {
+        val p = pairOf(d) ?: return
+        if (!split) {
+            usePane(paneA)
+            dropSelection()
+            smoothLayout()
+            split = true
+            if (paneA.doc !== p.left) paneA.setDoc(p.left)
+            if (paneB.doc !== p.right) paneB.setDoc(p.right)
+            applySplitLayout()
+        } else if (shownPair !== p) {
+            // another pair was on screen: both sides switch to this one
+            usePane(paneA)
+            dropSelection()
+            if (paneA.doc !== p.left) paneA.setDoc(p.left)
+            if (paneB.doc !== p.right) paneB.setDoc(p.right)
+        }
+        shownPair = p
+        usePane(if (paneB.doc === d) paneB else paneA)
+        active = d
+    }
+
+    /** Back to one full-width canvas (the pair stays grouped). The caller decides what it shows. */
+    private fun leaveSplitView() {
+        hideSwapButton()
+        if (!split) return
+        usePane(paneA)
+        dropSelection()
+        smoothLayout()
+        split = false
+        shownPair = null
+        paneB.setDoc(null)
+        applySplitLayout()
+    }
+
+    /** Touching the other side makes it the active side. */
+    private fun switchPane(v: PdfView) {
+        if (v === pdfView) return
+        val d = v.doc ?: return
+        usePane(v)
+        active = d
+        if (pagesPanel.visibility == View.VISIBLE) {
+            pagesPanel.setDoc(d)
+            pagesPanel.setCurrent(v.currentPageIndex())
+        }
+        updatePageBadge()
+        rebuildTabs()
+        updateButtons()
+        saveSession()
+    }
+
+    private fun applySplitLayout() {
+        val lpA = paneA.layoutParams as LinearLayout.LayoutParams
+        val lpB = paneB.layoutParams as LinearLayout.LayoutParams
+        lpA.weight = if (split) splitRatio else 1f
+        lpB.weight = if (split) 1f - splitRatio else 0f
+        paneA.layoutParams = lpA
+        paneB.layoutParams = lpB
+        paneB.visibility = if (split) View.VISIBLE else View.GONE
+        splitHandle.visibility = paneB.visibility
+        paneA.activeMark = split && pdfView === paneA
+        paneB.activeMark = split && pdfView === paneB
+        // two canvases share the memory one canvas would use
+        paneA.setMemoryShare(if (split) 0.5f else 1f)
+        paneB.setMemoryShare(0.5f)
+    }
+
+    /** Keeps each pair next to each other in the tab order (left, then right). */
+    private fun keepPairTogether() {
+        pairs.removeAll { !docs.contains(it.left) || !docs.contains(it.right) || it.left === it.right }
+        for (p in pairs) {
+            docs.remove(p.right)
+            docs.add(docs.indexOf(p.left) + 1, p.right)
+        }
+    }
+
+    /** Groups the current file (left) with [d] (right) and shows them side by side, [d] active. */
+    private fun openSideBySide(d: Doc) {
+        val a = active ?: return
+        groupPair(a, d, focus = d)
+    }
+
+    /**
+     * Groups [left] and [right] side by side and shows them, [focus] active. Other pairs stay; a file
+     * can only be in one pair, so a pair either file was in before is ungrouped.
+     */
+    private fun groupPair(left: Doc, right: Doc, focus: Doc) {
+        if (left === right || !docs.contains(left) || !docs.contains(right)) return
+        if (split) leaveSplitView()
+        pairs.removeAll { it.left === left || it.right === left || it.left === right || it.right === right }
+        pairs.add(DocPair(left, right))
+        keepPairTogether()
+        active = null // so activate() refreshes everything for the pair
+        activate(focus)
+    }
+
+    /** While the pair is shown: puts [d] on the side that isn't active, in place of its file. */
+    private fun showOnOtherSide(d: Doc) {
+        if (!split || inPair(d)) return
+        val p = shownPair ?: return
+        val other = otherPane()
+        val replaced = other.doc
+        if (p.left === replaced) p.left = d else p.right = d
+        other.clearSelection()
+        other.clearLasso()
+        other.setDoc(d)
+        keepPairTogether()
+        rebuildTabs()
+        saveSession()
+    }
+
+    /** Ungroups [pair]. If it was on screen, [keep] stays, full width. */
+    private fun ungroup(pair: DocPair, keep: Doc?) {
+        if (!pairs.remove(pair)) return
+        if (split && shownPair === pair) {
+            leaveSplitView()
+            val k = keep ?: active
+            if (k != null) {
+                active = null // so activate() refreshes everything for it
+                activate(k)
+                return
+            }
+        }
+        rebuildTabs()
+        saveSession()
+    }
+
+    /**
+     * Grip between the two sides. Drag: change their widths. Tap: a swap button appears on it (tap that
+     * to swap the two files left and right). Hold: half and half. Drag it to the far left or right and
+     * keep it there for a moment: asks whether to ungroup (the side that's still big stays, full width).
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun makeSplitHandle(row: LinearLayout): View {
+        val handle = FrameLayout(this).apply {
+            setBackgroundColor(BG)
+            contentDescription = "Drag to resize, tap for the swap button, hold for half and half"
+        }
+        val grip = View(this).apply { background = rounded(0xFF636366.toInt(), 3) }
+        handle.addView(grip, FrameLayout.LayoutParams(dp(5), dp(44), Gravity.CENTER))
+        val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        var downX = 0f
+        var downY = 0f
+        var dragging = false
+        var held = false
+        // widths stay between 20% and 80%; only while the grip is pushed against an edge can it go further
+        var startRatio = 0.5f
+        var atEdge = 0          // -1 far left, 1 far right, 0 neither
+        var edgeAsked = false
+        val idle = rounded(0xFF636366.toInt(), 3)
+        val edgeAsk = Runnable {
+            if (!split || atEdge == 0) return@Runnable
+            edgeAsked = true
+            handle.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+            askUngroupFromEdge(keepRight = atEdge < 0, restoreRatio = startRatio)
+        }
+        val hold = Runnable {
+            held = true
+            splitRatio = 0.5f
+            applySplitLayout()
+            prefs.edit().putFloat("split_ratio", splitRatio).apply()
+            handle.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        }
+        handle.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    grip.background = rounded(ACCENT, 3)
+                    downX = e.rawX; downY = e.rawY
+                    dragging = false
+                    held = false
+                    atEdge = 0
+                    edgeAsked = false
+                    startRatio = splitRatio
+                    hideSwapButton()
+                    handle.postDelayed(hold, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!dragging && !held && Math.hypot((e.rawX - downX).toDouble(), (e.rawY - downY).toDouble()) > slop) {
+                        dragging = true
+                        handle.removeCallbacks(hold)
+                    }
+                    if (dragging && !edgeAsked && row.width > 0) {
+                        val loc = IntArray(2)
+                        row.getLocationOnScreen(loc)
+                        val r = ((e.rawX - loc[0]) / row.width).coerceIn(0.04f, 0.96f)
+                        if (Math.abs(r - splitRatio) > 0.002f) {
+                            splitRatio = r
+                            applySplitLayout()
+                        }
+                        // pushed against an edge: hold there for a moment to be asked about ungrouping
+                        val edge = if (r < 0.1f) -1 else if (r > 0.9f) 1 else 0
+                        if (edge != atEdge) {
+                            atEdge = edge
+                            handle.removeCallbacks(edgeAsk)
+                            if (edge != 0) {
+                                grip.background = rounded(0xFFFF9F0A.toInt(), 3) // orange: keep holding
+                                handle.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                                handle.postDelayed(edgeAsk, 700)
+                            } else {
+                                grip.background = rounded(ACCENT, 3)
+                            }
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    handle.removeCallbacks(hold)
+                    handle.removeCallbacks(edgeAsk)
+                    grip.background = idle
+                    if (edgeAsked) {
+                        // the ungroup question decides what happens next
+                    } else if (dragging) {
+                        // let go near an edge without waiting: back inside the normal range
+                        if (splitRatio < 0.2f || splitRatio > 0.8f) {
+                            splitRatio = splitRatio.coerceIn(0.2f, 0.8f)
+                            applySplitLayout()
+                        }
+                        prefs.edit().putFloat("split_ratio", splitRatio).apply()
+                    } else if (!held && e.actionMasked == MotionEvent.ACTION_UP) showSwapButton(e.y)
+                    atEdge = 0
+                }
+            }
+            true
+        }
+        return handle
+    }
+
+    /**
+     * The grip was held against an edge: ungroup? [keepRight] = the right side is the big one and stays.
+     * Cancel puts the widths back as they were before the drag.
+     */
+    private fun askUngroupFromEdge(keepRight: Boolean, restoreRatio: Float) {
+        if (!split) return
+        val keep = if (keepRight) paneB.doc else paneA.doc
+        var done = false
+        fun restore() {
+            if (done) return
+            done = true
+            if (split) {
+                splitRatio = restoreRatio.coerceIn(0.2f, 0.8f)
+                applySplitLayout()
+                prefs.edit().putFloat("split_ratio", splitRatio).apply()
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Ungroup side by side?")
+            .setMessage(keep?.let { "“${baseName(it.name)}” stays open, full width. Both files stay open in their tabs." }
+                ?: "Both files stay open in their tabs.")
+            .setPositiveButton("Ungroup") { _, _ ->
+                done = true
+                // the next pair opens with the widths from before this drag
+                splitRatio = restoreRatio.coerceIn(0.2f, 0.8f)
+                prefs.edit().putFloat("split_ratio", splitRatio).apply()
+                shownPair?.let { ungroup(it, keep = keep ?: active) }
+            }
+            .setNegativeButton("Cancel") { _, _ -> restore() }
+            .setOnDismissListener { restore() }
+            .create()
+            .let { compactShow(it, 340) }
+    }
+
+    // round "swap sides" button shown on the grip after a tap; hides by itself after a few seconds
+    private var swapBtn: ImageView? = null
+    private val hideSwapRunnable = Runnable { hideSwapButton() }
+
+    /** Shows the swap button on the grip at height [y] (grip coordinates). */
+    private fun showSwapButton(y: Float) {
+        if (!split) return
+        val row = splitHandle.parent as? View ?: return
+        val stage = row.parent as? FrameLayout ?: return
+        val size = dp(44)
+        val b = swapBtn ?: ImageView(this).apply {
+            setImageResource(R.drawable.ic_swap)
+            imageTintList = ColorStateList.valueOf(TEXT)
+            contentDescription = "Swap sides"
+            tooltipText = "Swap sides"
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(11), dp(11), dp(11), dp(11))
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), oval(ACCENT), null)
+            elevation = dp(8).toFloat()
+            isClickable = true
+            setOnClickListener {
+                hideSwapButton()
+                swapSides()
+            }
+            stage.addView(this, FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.START))
+            swapBtn = this
+        }
+        b.translationX = row.left + splitHandle.left + splitHandle.width / 2f - size / 2f
+        b.translationY = (row.top + y - size / 2f).coerceIn(dp(8).toFloat(), maxOf(dp(8).toFloat(), stage.height - size - dp(8).toFloat()))
+        b.animate().cancel()
+        b.visibility = View.VISIBLE
+        b.scaleX = 0.6f; b.scaleY = 0.6f; b.alpha = 0f
+        b.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140).start()
+        b.bringToFront()
+        main.removeCallbacks(hideSwapRunnable)
+        main.postDelayed(hideSwapRunnable, 3000)
+    }
+
+    private fun hideSwapButton() {
+        main.removeCallbacks(hideSwapRunnable)
+        val b = swapBtn ?: return
+        if (b.visibility != View.VISIBLE) return
+        b.animate().cancel()
+        b.animate().alpha(0f).scaleX(0.6f).scaleY(0.6f).setDuration(120)
+            .withEndAction { b.visibility = View.GONE }.start()
+    }
+
+    /**
+     * Swaps the two files left and right. The canvases themselves change places (nothing is re-rendered),
+     * and each file keeps its width.
+     */
+    private fun swapSides() {
+        if (!split) return
+        val p = shownPair ?: return
+        val row = splitHandle.parent as? LinearLayout ?: return
+        dropSelection()
+        smoothLayout() // the two sides slide past each other
+        val l = p.left
+        p.left = p.right
+        p.right = l
+        keepPairTogether()
+        val t = paneA
+        paneA = paneB
+        paneB = t
+        row.removeView(paneA)
+        row.removeView(paneB)
+        row.addView(paneA, 0)          // left of the handle
+        row.addView(paneB)             // right of the handle
+        splitRatio = 1f - splitRatio
+        prefs.edit().putFloat("split_ratio", splitRatio).apply()
+        applySplitLayout()
+        splitHandle.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+        rebuildTabs()
         saveSession()
     }
 
@@ -1306,12 +2007,16 @@ class MainActivity : ComponentActivity() {
             }
             .setNeutralButton("Close anyway") { _, _ -> closeDoc(d) }
             .setNegativeButton("Cancel", null)
-            .show()
-            .let { compact(it, 360) }
+            .create()
+            .let { compactShow(it, 360) }
             .getButton(AlertDialog.BUTTON_NEUTRAL)?.setTextColor(0xFFFF453A.toInt())
     }
 
     private fun closeDoc(d: Doc) {
+        pairOf(d)?.let { p ->
+            // closing one of a pair ungroups it; if it was on screen, its partner stays, full width
+            ungroup(p, keep = if (p.left === d) p.right else p.left)
+        }
         d.closed = true
         val idx = docs.indexOf(d)
         docs.remove(d)
@@ -1357,22 +2062,17 @@ class MainActivity : ComponentActivity() {
             val closed = withContext(Dispatchers.IO) {
                 try { Store.listTrash(this@MainActivity) } catch (e: Exception) { emptyList() }
             }.take(10)
-            val pm = PopupMenu(this@MainActivity, anchor)
-            pm.menu.add(0, 0, 0, "Open PDF…")
+            val items = ArrayList<GItem>()
+            items.add(GItem("Open PDF…") { openLauncher.launch(arrayOf("application/pdf")) })
             val fmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
             if (closed.isEmpty()) {
-                pm.menu.add(1, -1, 1, "No recently closed tabs").setEnabled(false)
+                items.add(GItem("No recently closed tabs", enabled = false) {})
             } else {
-                for ((k, c) in closed.withIndex()) {
-                    pm.menu.add(1, k + 1, k + 1, "Reopen “${baseName(c.name)}” · closed ${fmt.format(Date(c.closedAt))}")
+                for (c in closed) {
+                    items.add(GItem("Reopen “${baseName(c.name)}” · closed ${fmt.format(Date(c.closedAt))}") { reopenClosed(c) })
                 }
             }
-            pm.setOnMenuItemClickListener { item ->
-                if (item.itemId == 0) openLauncher.launch(arrayOf("application/pdf"))
-                else closed.getOrNull(item.itemId - 1)?.let { reopenClosed(it) }
-                true
-            }
-            pm.show()
+            showGenieMenu(anchor, items)
         }
     }
 
@@ -1403,6 +2103,7 @@ class MainActivity : ComponentActivity() {
             toast("Open a PDF first")
             return
         }
+        if ((pagesPanel.visibility == View.VISIBLE) != on) smoothLayout()
         pagesPanel.visibility = if (on) View.VISIBLE else View.GONE
         pagesPanelDivider.visibility = pagesPanel.visibility
         if (on) {
@@ -1424,6 +2125,86 @@ class MainActivity : ComponentActivity() {
      * Gives an AlertDialog the app's look: a sensible width (never wider than 90% of the screen),
      * a rounded card with a hairline edge, and calm blue buttons without all-caps.
      */
+    /**
+     * Animates the next layout change (bars appearing or hiding, panels opening, the two sides moving)
+     * instead of jumping. The tab bar and the floating bars place themselves and are left out.
+     */
+    private fun smoothLayout() {
+        val root = findViewById<ViewGroup>(android.R.id.content) ?: return
+        if (!root.isLaidOut) return
+        val t = android.transition.AutoTransition().apply {
+            duration = 240
+            interpolator = android.view.animation.PathInterpolator(0.2f, 0.8f, 0.2f, 1f)
+            excludeChildren(tabScroll, true)
+            excludeChildren(pagesPanel, true)
+            excludeTarget(selBar, true)
+            excludeTarget(lassoBar, true)
+            excludeTarget(pageBadge, true)
+            swapBtn?.let { excludeTarget(it, true) }
+        }
+        try {
+            android.transition.TransitionManager.beginDelayedTransition(root, t)
+        } catch (e: Exception) {
+            // never let an animation get in the way
+        }
+    }
+
+    /** A floating bar that was hidden appears with a short pop instead of blinking in. */
+    private fun popIn(v: View) {
+        if (v.visibility == View.VISIBLE) return
+        v.visibility = View.VISIBLE
+        v.alpha = 0f
+        v.scaleX = 0.85f
+        v.scaleY = 0.85f
+        v.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(160)
+            .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+    }
+
+    /** Where the screen was last touched (raw px), so a window can grow out of what was tapped. */
+    private var lastTouchX = -1f
+    private var lastTouchY = -1f
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN || ev.actionMasked == MotionEvent.ACTION_UP) {
+            lastTouchX = ev.rawX
+            lastTouchY = ev.rawY
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    /**
+     * Shows a dialog in the app's look ([compact]) that grows smoothly out of the point last tapped
+     * (and fades away when closed).
+     */
+    private fun compactShow(dialog: AlertDialog, widthDp: Int): AlertDialog {
+        // the growing in comes from us; the system only does a quick fade-out when it closes
+        dialog.window?.setWindowAnimations(R.style.ZenDialogAnim)
+        dialog.show()
+        compact(dialog, widthDp)
+        val decor = dialog.window?.decorView ?: return dialog
+        decor.alpha = 0f
+        decor.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (decor.viewTreeObserver.isAlive) decor.viewTreeObserver.removeOnPreDrawListener(this)
+                val loc = IntArray(2)
+                decor.getLocationOnScreen(loc)
+                if (lastTouchX >= 0f && decor.width > 0) {
+                    decor.pivotX = lastTouchX - loc[0]
+                    decor.pivotY = lastTouchY - loc[1]
+                } else {
+                    decor.pivotX = decor.width / 2f
+                    decor.pivotY = decor.height / 2f
+                }
+                decor.scaleX = 0.35f
+                decor.scaleY = 0.35f
+                decor.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220)
+                    .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0.9f, 0.25f, 1f)).start()
+                return true
+            }
+        })
+        return dialog
+    }
+
     private fun compact(dialog: AlertDialog, widthDp: Int): AlertDialog {
         val screen = resources.displayMetrics.widthPixels
         val w = minOf(dp(widthDp), (screen * 0.9f).toInt())
@@ -1578,8 +2359,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
             .setNegativeButton("Cancel", null)
-            .show()
-            .let { compact(it, 340) }
+            .create()
+            .let { compactShow(it, 340) }
     }
 
     /** "+" in the page overview: a new page at the end with the last page's size, paper and margins. */
@@ -1602,47 +2383,29 @@ class MainActivity : ComponentActivity() {
     /** ⋮ on a thumbnail. */
     private fun showThumbMenu(anchor: View, i: Int) {
         val d = active ?: return
-        val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 2, 1, "Insert blank page after")
-        pm.menu.add(0, 3, 2, "Insert PDF after this page")
-        pm.menu.add(0, 4, 3, "Delete page")
-        pm.setOnMenuItemClickListener { item ->
-            if (active === d && i in 0 until d.pageCount) {
-                when (item.itemId) {
-                    2 -> askNewPage(i + 1)
-                    3 -> { insertAfterIndex = i; pickPdf(d) }
-                    4 -> if (!pdfView.deletePage(i)) toast("Can't delete the only page")
-                }
-            }
-            true
-        }
-        pm.show()
+        fun ok() = active === d && i in 0 until d.pageCount
+        showGenieMenu(anchor, listOf(
+            GItem("Insert blank page after") { if (ok()) askNewPage(i + 1) },
+            GItem("Insert PDF after this page") { if (ok()) { insertAfterIndex = i; pickPdf(d) } },
+            GItem("Delete page", color = 0xFFFF453A.toInt()) { if (ok() && !pdfView.deletePage(i)) toast("Can't delete the only page") },
+        ))
     }
 
     private fun showPagesMenu(anchor: View) {
         val d = active ?: return
         val cur = pdfView.currentPageIndex().coerceIn(0, maxOf(0, d.pageCount - 1))
         val n = cur + 1
-        val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, "Insert blank page after page $n")
-        pm.menu.add(0, 2, 1, "Insert blank page before page $n")
-        pm.menu.add(0, 3, 2, "Add blank page at the end")
-        pm.menu.add(0, 4, 3, "Delete page $n")
-        pm.setOnMenuItemClickListener { item ->
-            if (active === d) {
-                when (item.itemId) {
-                    1 -> askNewPage(cur + 1)
-                    2 -> askNewPage(cur)
-                    3 -> askNewPage(d.pageCount)
-                    4 -> {
-                        if (pdfView.deletePage(cur)) toast("Page $n deleted (Undo brings it back)")
-                        else toast("Can't delete the only page")
-                    }
+        showGenieMenu(anchor, listOf(
+            GItem("Insert blank page after page $n") { if (active === d) askNewPage(cur + 1) },
+            GItem("Insert blank page before page $n") { if (active === d) askNewPage(cur) },
+            GItem("Add blank page at the end") { if (active === d) askNewPage(d.pageCount) },
+            GItem("Delete page $n", color = 0xFFFF453A.toInt()) {
+                if (active === d) {
+                    if (pdfView.deletePage(cur)) toast("Page $n deleted (Undo brings it back)")
+                    else toast("Can't delete the only page")
                 }
-            }
-            true
-        }
-        pm.show()
+            },
+        ))
     }
 
     // ======================= opening =======================
@@ -1663,6 +2426,12 @@ class MainActivity : ComponentActivity() {
 
     private fun restoreSession(startIntent: Intent?) {
         lifecycleScope.launch {
+            // read before tabs open: opening them saves the session (and with it these settings) again
+            // pairs as "left:right;left:right" (older versions kept one pair in split_left / split_right)
+            val pairIds = (prefs.getString("split_pairs", null)
+                ?: listOfNotNull(prefs.getString("split_left", null), prefs.getString("split_right", null))
+                    .takeIf { it.size == 2 }?.joinToString(":") ?: "")
+                .split(';').mapNotNull { e -> e.split(':').takeIf { it.size == 2 }?.let { it[0] to it[1] } }
             val (ids, activeId) = withContext(Dispatchers.IO) { Store.loadSession(this@MainActivity) }
             for (id in ids) {
                 val dir = File(Store.root(this@MainActivity), id)
@@ -1675,7 +2444,20 @@ class MainActivity : ComponentActivity() {
                     toast("Couldn't restore a tab: ${t.message}")
                 }
             }
-            (docs.firstOrNull { it.id == activeId } ?: docs.firstOrNull())?.let { activate(it) }
+            // side by side, as it was left
+            for ((lId, rId) in pairIds) {
+                val left = docs.firstOrNull { it.id == lId }
+                val right = docs.firstOrNull { it.id == rId }
+                if (left != null && right != null && left !== right && !inPair(left) && !inPair(right)) {
+                    pairs.add(DocPair(left, right))
+                }
+            }
+            keepPairTogether()
+            // the pair opens side by side if one of its files was the active one
+            (docs.firstOrNull { it.id == activeId } ?: docs.firstOrNull())?.let {
+                active = null
+                activate(it)
+            }
             startIntent?.let { handleIntent(it) }
         }
     }
@@ -1728,8 +2510,8 @@ class MainActivity : ComponentActivity() {
                 newNote(w, h, paper, dark)
             }
             .setNegativeButton("Cancel", null)
-            .show()
-            .let { compact(it, 340) }
+            .create()
+            .let { compactShow(it, 340) }
     }
 
     /**
@@ -1937,6 +2719,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun saveSession() {
+        prefs.edit()
+            .putString("split_pairs", pairs.joinToString(";") { "${it.left.id}:${it.right.id}" })
+            .remove("split_left")
+            .remove("split_right")
+            .apply()
         val text = Store.sessionText(docs.map { it.id }, active?.id)
         val f = Store.sessionFile(this)
         try {
@@ -2108,8 +2895,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
             .setNegativeButton("Cancel", null)
-            .show()
-            .let { compact(it, 400) }
+            .create()
+            .let { compactShow(it, 400) }
     }
 
     // ======================= save / export / share =======================
@@ -2131,21 +2918,11 @@ class MainActivity : ComponentActivity() {
     /** One icon for saving: Save (editable in Margin), Save as / rename, or Export a plain PDF. */
     private fun showSaveMenu(anchor: View) {
         val d = active ?: run { toast("Open a PDF first"); return }
-        val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, if (d.saveUri != null) "Save" else "Save…")
-        pm.menu.add(0, 2, 1, "Save as / Rename…")
-        pm.menu.add(0, 3, 2, "Export as plain PDF…")
-        pm.setOnMenuItemClickListener { item ->
-            if (active === d) {
-                when (item.itemId) {
-                    1 -> save(d)
-                    2 -> showSaveDialog(d)
-                    3 -> startExport(d)
-                }
-            }
-            true
-        }
-        pm.show()
+        showGenieMenu(anchor, listOf(
+            GItem(if (d.saveUri != null) "Save" else "Save…") { if (active === d) save(d) },
+            GItem("Save as / Rename…") { if (active === d) showSaveDialog(d) },
+            GItem("Export as plain PDF…") { if (active === d) startExport(d) },
+        ))
     }
 
     /** First save (or Save as): save in place, optionally renaming, or save as a new file. */
@@ -2195,7 +2972,7 @@ class MainActivity : ComponentActivity() {
         }
         b.setNeutralButton("Save as new file…") { _, _ -> pickSaveLocation(d, chosenName()) }
         b.setNegativeButton("Cancel", null)
-        compact(b.show(), 380)
+        compactShow(b.create(), 380)
     }
 
     private fun pickSaveLocation(d: Doc, base: String = baseName(d.name)) {
@@ -2363,28 +3140,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (active !== d) return@launch
-            val pm = PopupMenu(this@MainActivity, pressAnchor)
-            if (found != null) pm.menu.add(0, 7, 0, "Copy this image")
+            // the menu flows out of the point that was held
+            val items = ArrayList<GItem>()
+            if (found != null) items.add(GItem("Copy this image") { if (active === d) copyPdfImage(found) })
             val canPaste = canPaste()
-            pm.menu.add(0, 1, 0, if (canPaste) "Paste image here" else "Paste image (no image on clipboard)").setEnabled(canPaste)
-            pm.menu.add(0, 5, 4, "Blank page after this page")
-            pm.menu.add(0, 6, 5, "Delete this page")
-            pm.setOnMenuItemClickListener { item ->
+            items.add(GItem(if (canPaste) "Paste image here" else "Paste image (no image on clipboard)", enabled = canPaste) {
+                if (active === d) { pendingPlace = pt; paste(d) }
+            })
+            items.add(GItem("Blank page after this page") {
+                val idx = d.pages.indexOf(pt.page)
+                if (active === d && idx >= 0) askNewPage(idx + 1)
+            })
+            items.add(GItem("Delete this page", color = 0xFFFF453A.toInt()) {
+                val idx = d.pages.indexOf(pt.page)
                 if (active === d) {
-                    val idx = d.pages.indexOf(pt.page)
-                    when (item.itemId) {
-                        1 -> { pendingPlace = pt; paste(d) }
-                        5 -> if (idx >= 0) askNewPage(idx + 1)
-                        6 -> {
-                            if (idx >= 0 && pdfView.deletePage(idx)) toast("Page ${idx + 1} deleted (Undo brings it back)")
-                            else toast("Can't delete the only page")
-                        }
-                        7 -> if (found != null) copyPdfImage(found)
-                    }
+                    if (idx >= 0 && pdfView.deletePage(idx)) toast("Page ${idx + 1} deleted (Undo brings it back)")
+                    else toast("Can't delete the only page")
                 }
-                true
-            }
-            pm.show()
+            })
+            showGenieMenu(pressAnchor, items)
         }
     }
 
@@ -2392,21 +3166,12 @@ class MainActivity : ComponentActivity() {
         val d = active ?: run { toast("Open a PDF first"); return }
         pendingPlace = null
         insertAfterIndex = -1
-        val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, "Image from gallery")
-        pm.menu.add(0, 2, 1, "Take photo")
-        pm.menu.add(0, 3, 2, "PDF file (pages after page ${pdfView.currentPageIndex() + 1})")
-        pm.menu.add(0, 4, 3, "Paste image").setEnabled(canPaste())
-        pm.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> pickImage(d)
-                2 -> takePhoto(d)
-                3 -> pickPdf(d)
-                4 -> paste(d)
-            }
-            true
-        }
-        pm.show()
+        showGenieMenu(anchor, listOf(
+            GItem("Image from gallery") { if (docs.contains(d)) pickImage(d) },
+            GItem("Take photo") { if (docs.contains(d)) takePhoto(d) },
+            GItem("PDF file (pages after page ${pdfView.currentPageIndex() + 1})") { if (docs.contains(d)) pickPdf(d) },
+            GItem("Paste image", enabled = canPaste()) { if (docs.contains(d)) paste(d) },
+        ))
     }
 
     private fun takePhoto(d: Doc) {
@@ -2509,7 +3274,8 @@ class MainActivity : ComponentActivity() {
         if (y + bh > sh - m) y = t - gap - bh
         if (y < m) y = (sh - bh - m).coerceAtMost(b + gap)
         y = y.coerceIn(m, maxOf(m, sh - bh - m))
-        bar.translationX = ((l + r) / 2f - bw / 2f).coerceIn(m, maxOf(m, sw - bw - m))
+        // side by side: the right side starts further right
+        bar.translationX = pdfView.left + ((l + r) / 2f - bw / 2f).coerceIn(m, maxOf(m, sw - bw - m))
         bar.translationY = y
     }
 
@@ -2532,7 +3298,7 @@ class MainActivity : ComponentActivity() {
         if (y < m) y = (sh - bh - m).coerceAtMost(b + gap)     // image fills the screen: stay on screen
         y = y.coerceIn(m, maxOf(m, sh - bh - m))
         val x = ((l + r) / 2f - bw / 2f).coerceIn(m, maxOf(m, sw - bw - m))
-        selBar.translationX = x
+        selBar.translationX = pdfView.left + x
         selBar.translationY = y
     }
 
@@ -2542,7 +3308,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         lockBtn.text = if (item.locked) "Unlock" else "Lock"
-        selBar.visibility = View.VISIBLE
+        popIn(selBar)
     }
 
     private fun toggleLock() {
