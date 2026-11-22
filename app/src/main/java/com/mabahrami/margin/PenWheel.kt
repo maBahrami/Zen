@@ -242,15 +242,6 @@ class PenWheel(context: Context) : View(context) {
         edge.alpha = (0x14 * a).toInt()
         canvas.drawCircle(cx, cy, (segIn - dp(5f)) * p, edge)
 
-        // centre: the current line's colour and size (its width in points while dragging the size)
-        run {
-            val pr = min(dp(10f), max(dp(1.5f), previewPx(stop) / 2f)) * s
-            fill.shader = null
-            fill.color = lineColour
-            fill.alpha = alpha
-            canvas.drawCircle(cx, cy, pr, fill)
-        }
-
         // tools (inner ring)
         val tp = part(0f)
         for ((i, it) in tools.withIndex()) {
@@ -285,33 +276,32 @@ class PenWheel(context: Context) : View(context) {
         if (cp > 0f) {
             val n = colours.size
             val step = 360f / n
-            for ((i, it) in colours.withIndex()) {
+            // the current colour last, so its lift shadow falls over its neighbours
+            for (i in colours.indices.sortedBy { if (colours[it].selected) 1 else 0 }) {
+                val it = colours[i]
                 // each segment sweeps in a moment after the one before
                 val sp = ((cp * 1.25f) - i * 0.25f / n).coerceIn(0f, 1f)
                 if (sp <= 0f) continue
                 val mid = -90f + step * i + (1f - sp) * -25f
                 val sweep = (step - segGap) * sp
-                val grow = if (it.selected) dp(6f) else 0f
+                // the current colour stands out like in the top palette: taller (out and in) and lifted
+                val growOut = if (it.selected) dp(7f) else 0f
+                val growIn = if (it.selected) dp(3f) else 0f
                 val press = if (it === pressed) dp(3f) else 0f
-                val rIn = (segIn + press) * min(1f, cp)
-                val rOut = (segOut + grow - press) * min(1f, cp)
+                val rIn = (segIn - growIn + press) * min(1f, cp)
+                val rOut = (segOut + growOut - press) * min(1f, cp)
                 sector(segPath, rIn, rOut, mid - sweep / 2f, sweep)
                 fill.shader = null
                 fill.color = it.tint
                 fill.alpha = alpha
+                if (it.selected) fill.setShadowLayer(dp(6f), 0f, dp(2f), ((0x80 * a).toInt() shl 24))
                 canvas.drawPath(segPath, fill)
+                fill.clearShadowLayer()
                 // a soft sheen from the top-left
                 shine.shader = RadialGradient(cx - rOut * 0.5f, cy - rOut * 0.6f, rOut * 1.6f,
                     intArrayOf(0x30FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
                 shine.alpha = alpha
                 canvas.drawPath(segPath, shine)
-                if (it.selected) {
-                    ring.color = Color.WHITE
-                    ring.alpha = alpha
-                    ring.strokeWidth = dp(2.2f)
-                    ring.strokeJoin = Paint.Join.ROUND
-                    canvas.drawPath(segPath, ring)
-                }
             }
         }
 
