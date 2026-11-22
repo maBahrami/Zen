@@ -9,6 +9,8 @@ import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.widget.PopupWindow
 import android.content.res.ColorStateList
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -313,6 +315,10 @@ class MainActivity : ComponentActivity() {
             }
         }
         v.onSelection = { item -> if (v === pdfView) updateSelBar(item) }
+        v.onPenButtonClick = { x, y ->
+            if (v !== pdfView && split) switchPane(v)
+            if (v === pdfView) showPenWheel(v, x, y)
+        }
         v.onLongPressPage = { x, y, pt -> if (v === pdfView) showPageMenu(x + v.left, y, pt) }
         v.onSelectionRect = { l, t, r, b -> if (v === pdfView) placeSelBar(l, t, r, b) }
         v.onLassoRect = { r ->
@@ -993,6 +999,63 @@ class MainActivity : ComponentActivity() {
         darkBtn.tooltipText = desc
         darkBtn.isEnabled = d != null
         darkBtn.alpha = if (d != null) 1f else 0.3f
+    }
+
+    private var wheelPop: PopupWindow? = null
+    private var wheel: PenWheel? = null
+
+    /** S Pen button clicked while hovering: the round pen menu, centred on the pen tip. Again: closes it. */
+    private fun showPenWheel(v: PdfView, x: Float, y: Float) {
+        wheel?.let { it.close(); return }
+        if (active == null) return
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        val opaque = 0xFF000000.toInt()
+        val drawing = !pdfView.eraserMode && !pdfView.lassoMode
+        fun icon(res: Int) = getDrawable(res)?.mutate()
+        val tools = listOf(
+            PenWheel.Item(PenWheel.TOOL, 0, icon(R.drawable.ic_pen),
+                Dark.ink(prefs.getInt("color", COLORS[0])) or opaque, drawing && !hlMode),
+            PenWheel.Item(PenWheel.TOOL, 1, icon(R.drawable.ic_highlighter),
+                Dark.ink(prefs.getInt("hl_color", YELLOW)) or opaque, drawing && hlMode),
+            PenWheel.Item(PenWheel.TOOL, 2, icon(R.drawable.ic_eraser), TEXT, pdfView.eraserMode),
+            PenWheel.Item(PenWheel.TOOL, 3, icon(R.drawable.ic_lasso), TEXT, pdfView.lassoMode),
+        )
+        // colours as the palette shows them (black shows white in dark view)
+        val dark = active?.dark == true
+        val colours = COLORS.map { c ->
+            PenWheel.Item(PenWheel.COLOUR, c, null, if (dark && !hlMode) Dark.ink(c) else c, drawing && c == pdfView.penColor)
+        }
+        val w = PenWheel(this)
+        w.setup(loc[0] + x, loc[1] + y, tools, colours)
+        w.onPick = { item ->
+            if (item.kind == PenWheel.TOOL) when (item.value) {
+                0 -> setTool(false)
+                1 -> setTool(true)
+                2 -> setEraser(true)
+                3 -> setLasso(true)
+            } else setColor(item.value)
+        }
+        val pop = PopupWindow(w, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, true).apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            animationStyle = 0
+            isClippingEnabled = false
+            setOnDismissListener {
+                if (wheel === w) {
+                    wheel = null
+                    wheelPop = null
+                }
+            }
+        }
+        w.onClosed = { try { pop.dismiss() } catch (e: Exception) {} }
+        wheel = w
+        wheelPop = pop
+        try {
+            pop.showAtLocation(window.decorView, Gravity.NO_GRAVITY, 0, 0)
+        } catch (e: Exception) {
+            wheel = null
+            wheelPop = null
+        }
     }
 
     /** Second tap on the highlighter: freehand (curvy line) or straight lines only. */

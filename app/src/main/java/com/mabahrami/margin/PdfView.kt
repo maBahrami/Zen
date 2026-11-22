@@ -265,11 +265,52 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         invalidate()
     }
 
+    /** S Pen button clicked while the pen hovers (not touching): view x, y of the tip. */
+    var onPenButtonClick: ((Float, Float) -> Unit)? = null
+
+    // S Pen button: a quick click while hovering opens the pen wheel; holding it while writing still erases
+    private var penBtnDown = false
+    private var penBtnDownAt = 0L
+    /** The pen touched the screen during this button press (then it's erasing, not a click). */
+    private var penBtnTouched = false
+
+    private fun penButton(down: Boolean, time: Long, x: Float, y: Float) {
+        if (down == penBtnDown) return
+        penBtnDown = down
+        if (down) {
+            penBtnDownAt = time
+            penBtnTouched = mode != MODE_NONE && mode != MODE_NAV
+        } else {
+            val click = !penBtnTouched && mode == MODE_NONE && time - penBtnDownAt < 500
+            penBtnTouched = false
+            if (click) onPenButtonClick?.invoke(x, y)
+        }
+    }
+
+    override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        val t = e.getToolType(0)
+        if (t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER) {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_BUTTON_PRESS -> if (e.actionButton == MotionEvent.BUTTON_STYLUS_PRIMARY) {
+                    penButton(true, e.eventTime, e.x, e.y); return true
+                }
+                MotionEvent.ACTION_BUTTON_RELEASE -> if (e.actionButton == MotionEvent.BUTTON_STYLUS_PRIMARY) {
+                    penButton(false, e.eventTime, e.x, e.y); return true
+                }
+            }
+        }
+        return super.onGenericMotionEvent(e)
+    }
+
     /** S Pen hovering: the eraser circle shows only while the tip touches the screen, so hovering hides it. */
     override fun onHoverEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_EXIT ->
                 if (mode != MODE_ERASE) hideEraser()
+        }
+        // the button state also comes with hover moves (some devices send no separate press/release)
+        if (e.actionMasked == MotionEvent.ACTION_HOVER_MOVE && e.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS) {
+            penButton((e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0, e.eventTime, e.x, e.y)
         }
         return super.onHoverEvent(e)
     }
@@ -2245,6 +2286,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     private fun beginPen(d: Doc, e: MotionEvent, idx: Int) {
         penPointerId = e.getPointerId(idx)
+        if (penBtnDown || (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
+            penBtnDown = true
+            penBtnTouched = true
+        }
         requestUnbufferedDispatch(e) // deliver pen events as soon as they arrive (lower latency)
         parent?.requestDisallowInterceptTouchEvent(true)
         val erase = eraserMode ||
