@@ -49,7 +49,7 @@ class PenWheel(context: Context) : View(context) {
         private const val ARC_START = -150.0
         private const val ARC_SPAN = 120.0
         /** Size steps (− and +) just past each end of the slider (degrees). */
-        private const val STEP_GAP = 15.0
+        private const val STEP_GAP = 19.0
         private const val TOOL_START = -PI * 3 / 4
     }
 
@@ -67,7 +67,8 @@ class PenWheel(context: Context) : View(context) {
     // geometry
     private val toolR = dp(110f)       // the tools sit around the colour disc, under the slider
     private val toolSize = dp(19f)     // larger buttons: easier to tap
-    private val stepSize = dp(12.5f)   // the − / + buttons at the ends of the size slider
+    private val stepSize = dp(19f)     // the − / + buttons at the ends of the size slider (as big as the tools)
+    private val stepR = dp(102f)       // a little outside the slider, clear of the colour ring
     private val segIn = dp(38f)        // the colour ring, empty in the middle: segments from here...
     private val segOut = dp(80f)       // ...out to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
@@ -224,17 +225,17 @@ class PenWheel(context: Context) : View(context) {
     private fun stepPos(plus: Boolean, p: Float, out: FloatArray) {
         val deg = if (plus) ARC_START + ARC_SPAN + STEP_GAP else ARC_START - STEP_GAP
         val a = Math.toRadians(deg)
-        out[0] = cx + arcR * p * cos(a).toFloat()
-        out[1] = cy + arcR * p * sin(a).toFloat()
+        out[0] = cx + stepR * p * cos(a).toFloat()
+        out[1] = cy + stepR * p * sin(a).toFloat()
     }
 
     /** Which step button (−1 = minus, +1 = plus) is under (x, y), or 0. */
     private fun stepAt(x: Float, y: Float): Int {
         if (progress < 0.5f) return 0
         stepPos(false, 1f, tmp)
-        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(7f)) return -1
+        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(5f)) return -1
         stepPos(true, 1f, tmp)
-        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(7f)) return 1
+        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(5f)) return 1
         return 0
     }
 
@@ -392,9 +393,9 @@ class PenWheel(context: Context) : View(context) {
                 fill.clearShadowLayer()
                 ring.color = Color.WHITE
                 ring.alpha = alpha
-                ring.strokeWidth = dp(1.8f)
+                ring.strokeWidth = dp(2f)
                 ring.strokeCap = Paint.Cap.ROUND
-                val arm = r * 0.45f
+                val arm = r * 0.4f
                 canvas.drawLine(tmp[0] - arm, tmp[1], tmp[0] + arm, tmp[1], ring)
                 if (plus) canvas.drawLine(tmp[0], tmp[1] - arm, tmp[0], tmp[1] + arm, ring)
                 ring.strokeCap = Paint.Cap.BUTT
