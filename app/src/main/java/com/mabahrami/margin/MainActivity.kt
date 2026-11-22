@@ -2526,23 +2526,7 @@ class MainActivity : ComponentActivity() {
                 setTextColor(TEXT)
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             })
-            // a chevron under the words, pointing down (drawn, so it's crisp in any font)
-            val vPath = android.graphics.Path().apply {
-                moveTo(2f, 2f); lineTo(12f, 10f); lineTo(22f, 2f)
-            }
-            val chevron = android.graphics.drawable.ShapeDrawable(android.graphics.drawable.shapes.PathShape(vPath, 24f, 12f)).apply {
-                paint.style = android.graphics.Paint.Style.STROKE
-                paint.strokeWidth = 2.4f
-                paint.strokeCap = android.graphics.Paint.Cap.ROUND
-                paint.strokeJoin = android.graphics.Paint.Join.ROUND
-                paint.color = TEXT_DIM
-                paint.isAntiAlias = true
-                intrinsicWidth = dp(22)
-                intrinsicHeight = dp(11)
-            }
-            addView(ImageView(context).apply { setImageDrawable(chevron) },
-                LinearLayout.LayoutParams(dp(22), dp(11)).apply { topMargin = dp(6) })
-            setPadding(dp(28), dp(14), dp(28), dp(10))
+            setPadding(dp(28), dp(16), dp(28), dp(16))
             background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
                 GradientDrawable().apply { cornerRadius = dp(28).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
             elevation = dp(10).toFloat()
