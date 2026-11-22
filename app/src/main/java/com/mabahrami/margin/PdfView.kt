@@ -420,6 +420,20 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     // ---- layout (document coordinates, in points) ----
     private var tops = FloatArray(0)
     private var lefts = FloatArray(0)
+    /**
+     * Each page's own sideways slide (document units). Only pages with margins slide, and only when not
+     * every page has margins; a slid page springs back to the centre once it's scrolled off screen.
+     */
+    private var shifts = FloatArray(0)
+    /** Layout follows the original pages (margins hang out to the sides), so margin pages can slide. */
+    private var floatLayout = false
+    /** Page being slid sideways by the current finger drag, or -1. */
+    private var slidePage = -1
+    private var slidMoved = false
+    private val slideRange = FloatArray(2)
+
+    /** Left edge of page [i] (with its margins), including its slide. */
+    private fun pl(i: Int): Float = lefts[i] + (if (i < shifts.size) shifts[i] else 0f)
     private var contentW = 0f
     private var contentH = 0f
 
@@ -1281,17 +1295,27 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         val n = d.pageCount
         var maxW = 0f
-        for (i in 0 until n) maxW = max(maxW, pageFullW(d, i))
+        var maxOrig = 0f
+        var allMargins = n > 0
+        for (i in 0 until n) {
+            maxW = max(maxW, pageFullW(d, i))
+            maxOrig = max(maxOrig, d.pages[i].w.toFloat())
+            if (pageFullW(d, i) <= d.pages[i].w + 0.01f) allMargins = false
+        }
+        floatLayout = !allMargins
         val t = FloatArray(n)
         val l = FloatArray(n)
         var y = 0f
         for (i in 0 until n) {
-            l[i] = (maxW - pageFullW(d, i)) / 2f
+            // as if there were no margins: the original pages are centred under each other
+            l[i] = if (floatLayout) (maxOrig - d.pages[i].w) / 2f - mlOf(d, i) else (maxW - pageFullW(d, i)) / 2f
             t[i] = y
             y += d.pages[i].h + GAP
         }
         tops = t; lefts = l
-        contentW = maxW
+        shifts = FloatArray(n)
+        slidePage = -1
+        contentW = if (floatLayout) maxOrig else maxW
         contentH = max(0f, y - GAP)
     }
 
@@ -1310,8 +1334,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     private fun ensureViewport(d: Doc) {
         if (d.scale > 0f || width == 0 || contentW <= 0f) return
-        d.scale = ((width - 2 * edgePx) / contentW).coerceIn(0.05f, MAX_SCALE)
+        var fitW = contentW
+        if (!floatLayout && d.pageCount > 0) fitW = d.pages.maxOf { it.w }.toFloat()
+        d.scale = ((width - 2 * edgePx) / fitW).coerceIn(0.05f, MAX_SCALE)
         d.tx = edgePx
+        if (!floatLayout && d.pageCount > 0) {
+            // every page has margins: start with the first original page in the middle
+            val cx = pl(0) + mlOf(d, 0) + d.pages[0].w / 2f
+            d.tx = width / 2f - cx * d.scale
+        }
         d.ty = topPx
         d.viewW = width
         clamp(d)
@@ -1322,6 +1353,48 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val ch = contentH * d.scale
         d.tx = if (cw + 2 * edgePx <= width) (width - cw) / 2f else d.tx.coerceIn(width - cw - edgePx, edgePx)
         d.ty = if (ch + topPx + edgePx <= height) topPx else d.ty.coerceIn(height - ch - edgePx, topPx)
+    }
+
+    /** How far page [i] may slide (document units) so its margins can be reached; [0, 0] = no sliding. */
+    private fun slideLimits(d: Doc, i: Int, out: FloatArray) {
+        out[0] = 0f; out[1] = 0f
+        if (!floatLayout || i !in 0 until d.pageCount || d.scale <= 0f) return
+        if (pageFullW(d, i) <= d.pages[i].w + 0.01f) return // no margins: stays centred
+        val viewL = (edgePx - d.tx) / d.scale
+        val viewR = (width - edgePx - d.tx) / d.scale
+        val l0 = lefts[i]
+        val r0 = lefts[i] + pageFullW(d, i)
+        out[0] = min(0f, viewR - r0) // slide left until the right margin's edge is in view
+        out[1] = max(0f, viewL - l0) // slide right until the left margin's edge is in view
+    }
+
+    /** Slides page [i] by [dxPx] screen pixels as far as it can; returns what's left over (pixels). */
+    private fun slideBy(d: Doc, i: Int, dxPx: Float): Float {
+        if (i !in shifts.indices) return dxPx
+        slideLimits(d, i, slideRange)
+        val old = shifts[i]
+        val nw = (old + dxPx / d.scale).coerceIn(slideRange[0], slideRange[1])
+        shifts[i] = nw
+        if (nw != old) slidMoved = true
+        return dxPx - (nw - old) * d.scale
+    }
+
+    /** Slid pages that are off screen go back to the centre; the others stay within their limits. */
+    private fun settleShifts(d: Doc) {
+        if (shifts.size != d.pageCount || d.scale <= 0f) return
+        val visTop = -d.ty / d.scale
+        val visBottom = (height - d.ty) / d.scale
+        for (i in shifts.indices) {
+            if (shifts[i] == 0f) continue
+            val top = tops[i]
+            val bottom = top + d.pages[i].h
+            if ((bottom < visTop || top > visBottom) && i != slidePage) {
+                shifts[i] = 0f
+            } else {
+                slideLimits(d, i, slideRange)
+                shifts[i] = shifts[i].coerceIn(slideRange[0], slideRange[1])
+            }
+        }
     }
 
     /** Page index under a document-space point, or -1. */
@@ -1337,12 +1410,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         if (found < 0 || found >= d.pageCount) return -1
         if (y > tops[found] + d.pages[found].h) return -1
-        if (x < lefts[found] || x > lefts[found] + pageFullW(d, found)) return -1
+        if (x < pl(found) || x > pl(found) + pageFullW(d, found)) return -1
         return found
     }
 
     // screen -> page-local helpers
-    private fun localX(d: Doc, i: Int, sx: Float) = (sx - d.tx) / d.scale - (lefts[i] + mlOf(d, i))
+    private fun localX(d: Doc, i: Int, sx: Float) = (sx - d.tx) / d.scale - (pl(i) + mlOf(d, i))
     private fun localY(d: Doc, i: Int, sy: Float) = (sy - d.ty) / d.scale - tops[i]
 
     /** Top-most image under a screen point. */
@@ -1396,6 +1469,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (tops.size != d.pageCount) relayout()
         ensureViewport(d)
         if (d.scale <= 0f) return
+        settleShifts(d)
 
         val s = d.scale
         val visTop = -d.ty / s
@@ -1415,7 +1489,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             val top = tops[i]
             val bottom = top + page.h
             if (bottom < visTop || top > visBottom) continue
-            val left = lefts[i]
+            val left = pl(i)
             val right = left + pageFullW(d, i)
             if (shadowForScale != s) {
                 shadowForScale = s
@@ -1524,11 +1598,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             val si = d.pages.indexOf(sp)
             if (si >= 0 && si < tops.size) {
                 canvas.save()
-                canvas.translate(lefts[si] + mlOf(d, si), tops[si])
+                canvas.translate(pl(si) + mlOf(d, si), tops[si])
                 if (mode == MODE_IMG_MOVE) drawImage(d, canvas, sel)
                 drawSelection(canvas, sel, s)
                 canvas.restore()
-                val ox = d.tx + (lefts[si] + mlOf(d, si) + sel.x) * s
+                val ox = d.tx + (pl(si) + mlOf(d, si) + sel.x) * s
                 val oy = d.ty + (tops[si] + sel.y) * s
                 onSelectionRect?.invoke(ox, oy, ox + sel.w * s, oy + sel.h * s)
             }
@@ -1568,7 +1642,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val i = d.pages.indexOf(page)
         if (i < 0 || i >= tops.size) return
         canvas.save()
-        canvas.translate(lefts[i] + mlOf(d, i), tops[i])
+        canvas.translate(pl(i) + mlOf(d, i), tops[i])
         lassoPaint.strokeWidth = 1f * density / s
         lassoPaint.color = if (d.dark) 0xFFE6E6E6.toInt() else Color.BLACK
         lassoPaint.pathEffect = DashPathEffect(floatArrayOf(6f * density / s, 4f * density / s), 0f)
@@ -1613,7 +1687,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 canvas.drawCircle(hx, hy, r, handlePaint)
                 canvas.drawCircle(hx, hy, r, handleRing)
             }
-            val ox = d.tx + (lefts[i] + mlOf(d, i)) * s
+            val ox = d.tx + (pl(i) + mlOf(d, i)) * s
             val oy = d.ty + tops[i] * s
             screenRect.set(ox + tmpRect.left * s, oy + tmpRect.top * s, ox + tmpRect.right * s, oy + tmpRect.bottom * s)
             onLassoRectIfChanged(screenRect)
@@ -1984,7 +2058,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private fun moveToPageUnderCentre(d: Doc, item: ImageItem, from: Page, before: ImgState): Boolean {
         val i = d.pages.indexOf(from)
         if (i < 0 || tops.size != d.pageCount) return false
-        val cx = lefts[i] + mlOf(d, i) + item.x + item.w / 2f
+        val cx = pl(i) + mlOf(d, i) + item.x + item.w / 2f
         val cy = tops[i] + item.y + item.h / 2f
         var j = pageAt(d, cx, cy)
         if (j < 0) {
@@ -2003,7 +2077,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         val to = d.pages[j]
         if (j != i) {
-            item.x += (lefts[i] + mlOf(d, i)) - (lefts[j] + mlOf(d, j))
+            item.x += (pl(i) + mlOf(d, i)) - (pl(j) + mlOf(d, j))
             item.y += tops[i] - tops[j]
         }
         // keep the centre on the target page
@@ -2086,6 +2160,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     beginPen(d, e, 0)
                 } else {
                     mode = MODE_NAV
+                    slidMoved = false
+                    slidePage = if (floatLayout) pageAt(d, (e.x - d.tx) / d.scale, (e.y - d.ty) / d.scale) else -1
+                    if (slidePage >= 0 && pageFullW(d, slidePage) <= d.pages[slidePage].w + 0.01f) slidePage = -1
                     interacting = true
                     velocity?.recycle()
                     velocity = VelocityTracker.obtain().also { it.addMovement(e) }
@@ -2176,7 +2253,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         velocity?.addMovement(e)
                         scaleDetector.onTouchEvent(e)
                         computeFocus(e, -1)
-                        d.tx += focusX - lastFx
+                        var dxPx = focusX - lastFx
+                        if (multiTouch) slidePage = -1 // pinching: no page slide
+                        if (slidePage >= 0) dxPx = slideBy(d, slidePage, dxPx)
+                        d.tx += dxPx
                         val dy = focusY - lastFy
                         if (pullPx > 0f && !multiTouch && !pullDone) {
                             // already pulling past the end: the finger changes the pull first
@@ -2241,8 +2321,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                             vt.computeCurrentVelocity(1000)
                             val vx = vt.xVelocity
                             val vy = vt.yVelocity
-                            if (!multiTouch && !longPressFired && pullPx <= 0f && hypot(vx, vy) > 400f * density) {
-                                startFling(d, vx, vy); flung = true
+                            val fx = if (slidMoved) 0f else vx
+                            slidePage = -1 // the slid page stays put until it's scrolled off screen
+                            if (!multiTouch && !longPressFired && pullPx <= 0f && hypot(fx, vy) > 400f * density) {
+                                startFling(d, fx, vy); flung = true
                             }
                             vt.recycle()
                         }
@@ -2382,7 +2464,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val pe = pr.predict() ?: return
         try {
             val pi = pe.findPointerIndex(penPointerId).let { if (it >= 0) it else 0 }
-            val ox = lefts[i] + mlOf(d, i)
+            val ox = pl(i) + mlOf(d, i)
             val oy = tops[i]
             var px = livePts[liveSize - 2]
             var py = livePts[liveSize - 1]
@@ -2438,7 +2520,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private fun addLivePoint(d: Doc, x: Float, y: Float) {
         val i = livePageIndex
         if (i < 0 || i >= d.pageCount) return
-        val px = (x - d.tx) / d.scale - (lefts[i] + mlOf(d, i))
+        val px = (x - d.tx) / d.scale - (pl(i) + mlOf(d, i))
         val py = (y - d.ty) / d.scale - tops[i]
         if (!px.isFinite() || !py.isFinite()) return
         if (liveSize >= 2) {
@@ -2463,7 +2545,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val i = pageAt(d, dx, dy)
         if (i < 0) return
         val page = d.pages[i]
-        val lx = dx - (lefts[i] + mlOf(d, i))
+        val lx = dx - (pl(i) + mlOf(d, i))
         val ly = dy - tops[i]
         val r = eraserPx / d.scale
         val list = page.strokes
@@ -2568,7 +2650,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private fun moveSnappedLineEnd(d: Doc, x: Float, y: Float) {
         val i = livePageIndex
         if (i < 0 || i >= d.pageCount || liveSize < 4) return
-        var ex = (x - d.tx) / d.scale - (lefts[i] + mlOf(d, i))
+        var ex = (x - d.tx) / d.scale - (pl(i) + mlOf(d, i))
         var ey = (y - d.ty) / d.scale - tops[i]
         if (liveHighlighter && hlStraight) {
             // magnetic: snap to exactly horizontal (0°) or vertical (90°) when close
