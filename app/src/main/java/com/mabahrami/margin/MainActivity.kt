@@ -3986,8 +3986,7 @@ class MainActivity : ComponentActivity() {
                     setPadding(dp(12), dp(10), dp(12), dp(10))
                     background = ripple(GradientDrawable().apply {
                         cornerRadius = dp(10).toFloat()
-                        setColor(0x0FFFFFFF)
-                        setStroke(dp(1), 0x40FFFFFF, dp(5).toFloat(), dp(4).toFloat())
+                        setColor(0x1AFFFFFF)
                     })
                 } else {
                     setPadding(dp(4), dp(10), dp(4), dp(10))
