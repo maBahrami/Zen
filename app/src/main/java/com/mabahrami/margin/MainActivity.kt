@@ -3645,6 +3645,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun importOne(uri: Uri, fromPicker: Boolean) {
+        // already open in a tab: just show that tab (no second copy of the same file)
+        val key = uri.toString()
+        docs.firstOrNull { !it.closed && (it.originUri == key || it.saveUri == key) }?.let { open ->
+            if (active !== open) activate(open)
+            return
+        }
         val id = UUID.randomUUID().toString()
         val dir = File(Store.root(this), id)
         var name = "document.pdf"
