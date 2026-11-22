@@ -66,6 +66,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         /** Straight highlighter snaps to horizontal/vertical within this many degrees. */
         /** Straightened lines within this many degrees of level (0°) or upright (90°) snap to it exactly. */
         private const val MAGNET_DEG = 1.0
+        /** Once levelled, a line stays levelled until it leans this far away. */
+        private const val MAGNET_RELEASE_DEG = 3.0
     }
 
     var onChange: ((Doc) -> Unit)? = null
@@ -2694,6 +2696,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         snapped = if (r.isLine) 1 else 2
         if (snapped == 1 && liveSize >= 4) {
             // magnetic levelling right away (the end then keeps following the pen, levelled too)
+            lastMagnet = 0 // a new line: nothing locked yet
             val m = levelMagnet(d, livePts[2] - livePts[0], livePts[3] - livePts[1])
             if (m == 1) livePts[3] = livePts[1]
             if (m == 2) livePts[2] = livePts[0]
@@ -2728,9 +2731,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private fun levelMagnet(d: Doc, dx: Float, dy: Float): Int {
         if (hypot(dx, dy) < 6f * density / d.scale) return 0
         val ang = Math.toDegrees(kotlin.math.atan2(abs(dy).toDouble(), abs(dx).toDouble()))
+        // sticky: it locks within MAGNET_DEG, but once locked it only lets go past MAGNET_RELEASE_DEG,
+        // so the small sideways slip of the tip while lifting the pen doesn't undo it
+        val hLimit = if (lastMagnet == 1) MAGNET_RELEASE_DEG else MAGNET_DEG
+        val vLimit = if (lastMagnet == 2) MAGNET_RELEASE_DEG else MAGNET_DEG
         return when {
-            ang <= MAGNET_DEG -> 1
-            ang >= 90.0 - MAGNET_DEG -> 2
+            ang <= hLimit -> 1
+            ang >= 90.0 - vLimit -> 2
             else -> 0
         }
     }
