@@ -2503,7 +2503,7 @@ class MainActivity : ComponentActivity() {
     private fun rememberPage(d: Doc, page: Int) {
         val t = openedAt[d.id]
         if (t != null) {
-            if (android.os.SystemClock.uptimeMillis() - t < 4000) return // still offering "Continue"
+            if (android.os.SystemClock.uptimeMillis() - t < 6000) return // still offering "Continue"
             openedAt.remove(d.id)
         }
         val keys = pageKeys(d)
@@ -2514,7 +2514,7 @@ class MainActivity : ComponentActivity() {
         main.postDelayed(saveLastPages, 1500)
     }
 
-    /** "Continue on page N ›" near the bottom for 3 seconds; a tap jumps there. Never blocks the document. */
+    /** "Continue on page N ›" at the top for 5 seconds; a tap jumps there. Never blocks the document. */
     private fun showResumeChip(d: Doc, page: Int) {
         val stage = stageView ?: return
         val chip = TextView(this).apply {
@@ -2527,12 +2527,12 @@ class MainActivity : ComponentActivity() {
                 GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
             elevation = dp(10).toFloat()
             alpha = 0f
-            translationY = dp(12).toFloat()
+            translationY = -dp(12).toFloat()
             isClickable = true
         }
         fun hide() {
             chip.animate().cancel()
-            chip.animate().alpha(0f).translationY(dp(12).toFloat()).setDuration(180)
+            chip.animate().alpha(0f).translationY(-dp(12).toFloat()).setDuration(180)
                 .withEndAction { (chip.parent as? ViewGroup)?.removeView(chip) }.start()
         }
         chip.setOnClickListener {
@@ -2545,10 +2545,10 @@ class MainActivity : ComponentActivity() {
         }
         stage.addView(chip, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
-        ).apply { setMargins(0, 0, 0, dp(40)) })
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+        ).apply { setMargins(0, dp(76), 0, 0) }) // just below the floating tool bar
         chip.animate().alpha(1f).translationY(0f).setDuration(200).start()
-        chip.postDelayed({ if (chip.parent != null) hide() }, 3000)
+        chip.postDelayed({ if (chip.parent != null) hide() }, 5000)
     }
 
     private fun addDoc(d: Doc, makeActive: Boolean) {
