@@ -3671,6 +3671,7 @@ class MainActivity : ComponentActivity() {
             d.name = name
             d.unsaved = false
             d.scale = 0f // fit to screen on first view
+            d.dark = true // documents open in dark view (a tap on the dark/light button switches)
             // remember where the file came from, so "Save in place" can write back to it
             if (fromPicker) keepWriteAccess(uri)
             d.originUri = uri.toString()
