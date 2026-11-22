@@ -351,10 +351,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     var onAddPageBetween: ((Int) -> Unit)? = null
 
     // ---- dim "+" in the gap between pages (tap: add a page there) ----
-    private val gapPlusRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0x4DFFFFFF }
-    private val gapPlusFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x14FFFFFF }
     private val gapPlusArm = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; color = 0x66FFFFFF; strokeCap = Paint.Cap.ROUND
+        style = Paint.Style.STROKE; color = 0x40FFFFFF; strokeCap = Paint.Cap.ROUND
     }
 
     /** The gap between pages is big enough on screen to show the + (not when zoomed far out). */
@@ -377,16 +375,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     /** Draws the + in each visible gap (document coordinates). */
     private fun drawGapPluses(d: Doc, canvas: Canvas, s: Float, visTop: Float, visBottom: Float) {
         if (!gapPlusShown(d)) return
-        val r = 11f * density / s
-        val arm = 5f * density / s
-        gapPlusRing.strokeWidth = 1.2f * density / s
-        gapPlusArm.strokeWidth = 1.6f * density / s
+        // just a small, thin, faint plus: there when you look for it, not catching the eye
+        val arm = 4f * density / s
+        gapPlusArm.strokeWidth = 1.1f * density / s
         val cx = contentW / 2f
         for (i in 0 until d.pageCount - 1) {
             val cy = tops[i] + d.pages[i].h + GAP / 2f
-            if (cy < visTop - r || cy > visBottom + r) continue
-            canvas.drawCircle(cx, cy, r, gapPlusFill)
-            canvas.drawCircle(cx, cy, r, gapPlusRing)
+            if (cy < visTop - arm || cy > visBottom + arm) continue
             canvas.drawLine(cx - arm, cy, cx + arm, cy, gapPlusArm)
             canvas.drawLine(cx, cy - arm, cx, cy + arm, gapPlusArm)
         }
