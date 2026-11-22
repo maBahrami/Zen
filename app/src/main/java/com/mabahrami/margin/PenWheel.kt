@@ -59,8 +59,8 @@ class PenWheel(context: Context) : View(context) {
     private fun dp(v: Float) = v * density
 
     // geometry
-    private val toolR = dp(25f)        // the tools sit in the middle, inside the colour ring
-    private val toolSize = dp(13.5f)
+    private val toolR = dp(24f)        // the tools sit in the middle, inside the colour ring
+    private val toolSize = dp(15.5f)
     private val segIn = dp(47f)        // the colour ring: segments from here...
     private val segOut = dp(80f)       // ...to here
     private val segGap = 3.2f          // degrees between segments
@@ -89,7 +89,6 @@ class PenWheel(context: Context) : View(context) {
     private var anim: ValueAnimator? = null
 
     private val glass = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val band = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -223,15 +222,7 @@ class PenWheel(context: Context) : View(context) {
         canvas.drawCircle(cx, cy, ringOut * p, shadow)
         shadow.clearShadowLayer()
 
-        // the slider band over the top, then the glass disc
-        if (sliderP > 0f) {
-            val r = (ringOut + arcOut) / 2f * p
-            band.strokeWidth = (arcOut - ringOut + dp(10f)) * p
-            band.color = 0xF21C1C1F.toInt()
-            band.alpha = (alpha * sliderP * 0.95f).toInt()
-            canvas.drawArc(cx - r, cy - r, cx + r, cy + r,
-                (ARC_START - 5).toFloat(), (ARC_SPAN + 10).toFloat(), false, band)
-        }
+        // the glass disc (the size slider above it has no background: just its wedge and thumb)
         glass.alpha = alpha
         canvas.drawCircle(cx, cy, ringOut * p, glass)
         // fine light rims
@@ -240,7 +231,7 @@ class PenWheel(context: Context) : View(context) {
         canvas.drawCircle(cx, cy, ringOut * p, edge)
         edge.color = 0x14FFFFFF
         edge.alpha = (0x14 * a).toInt()
-        canvas.drawCircle(cx, cy, (segIn - dp(5f)) * p, edge)
+        canvas.drawCircle(cx, cy, (segIn - dp(2f)) * p, edge)
 
         // tools (inner ring)
         val tp = part(0f)
@@ -264,7 +255,7 @@ class PenWheel(context: Context) : View(context) {
                 canvas.drawCircle(tmp[0], tmp[1], r, fill)
             }
             val ic = it.icon ?: continue
-            val h = (r * 0.6f).toInt()
+            val h = (r * 0.7f).toInt()
             ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
             ic.setTint(it.tint)
             ic.alpha = alpha
