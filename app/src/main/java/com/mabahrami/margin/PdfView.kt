@@ -1015,6 +1015,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (mode == MODE_SEL_MOVE) {
             selDx += (x - selLastX) / d.scale
             selDy += (y - selLastY) / d.scale
+            edgeScroll(y)
         } else {
             val i = d.pages.indexOf(lassoPage ?: return)
             if (i < 0) return
@@ -1043,22 +1044,63 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         val actions = ArrayList<Action>()
         val newStrokes = ArrayList<Stroke>()
-        for (st in selStrokes) {
-            val n = st.stretched(selDx, selDy, selSx, selSy, selAx, selAy)
-            val k = page.strokes.indexOf(st)
-            if (k >= 0) {
-                page.strokes[k] = n
-                actions.add(Action.ReplaceStroke(page, st, n))
+        // where the middle of the selection ends up: if that's on another page, everything moves there
+        val i = d.pages.indexOf(page)
+        var j = i
+        if (i >= 0 && tops.size == d.pageCount) {
+            val cx = selAx + (selBox.centerX() - selAx) * selSx + selDx
+            val cy = selAy + (selBox.centerY() - selAy) * selSy + selDy
+            val k = pageAt(d, pl(i) + mlOf(d, i) + cx, tops[i] + cy)
+            if (k >= 0) j = k
+        }
+        if (i >= 0 && j != i) {
+            val dst = d.pages[j]
+            // the same spot on screen, in the other page's coordinates
+            val ox = (pl(i) + mlOf(d, i)) - (pl(j) + mlOf(d, j))
+            val oy = tops[i] - tops[j]
+            val erased = ArrayList<EraseItem>()
+            for (st in selStrokes) {
+                val k = page.strokes.indexOf(st)
+                if (k < 0) continue
+                page.strokes.removeAt(k)
+                erased.add(EraseItem(page, k, st))
+                val n = st.stretched(selDx + ox, selDy + oy, selSx, selSy, selAx, selAy)
+                dst.strokes.add(n)
                 newStrokes.add(n)
             }
-        }
-        for (im in selImages) {
-            val before = im.state()
-            im.x = selAx + (im.x - selAx) * selSx + selDx
-            im.y = selAy + (im.y - selAy) * selSy + selDy
-            im.w *= selSx
-            im.h *= selSy
-            actions.add(Action.ImageChange(im, before, im.state()))
+            if (erased.isNotEmpty()) actions.add(Action.Erase(erased))
+            for (n in newStrokes) actions.add(Action.Add(dst, n))
+            for (im in selImages) {
+                val fromIndex = page.images.indexOf(im)
+                if (fromIndex < 0) continue
+                val before = im.state()
+                im.x = selAx + (im.x - selAx) * selSx + selDx + ox
+                im.y = selAy + (im.y - selAy) * selSy + selDy + oy
+                im.w *= selSx
+                im.h *= selSy
+                page.images.removeAt(fromIndex)
+                dst.images.add(im)
+                actions.add(Action.MoveImage(im, page, fromIndex, before, dst, dst.images.size - 1, im.state()))
+            }
+            lassoPage = dst
+        } else {
+            for (st in selStrokes) {
+                val n = st.stretched(selDx, selDy, selSx, selSy, selAx, selAy)
+                val k = page.strokes.indexOf(st)
+                if (k >= 0) {
+                    page.strokes[k] = n
+                    actions.add(Action.ReplaceStroke(page, st, n))
+                    newStrokes.add(n)
+                }
+            }
+            for (im in selImages) {
+                val before = im.state()
+                im.x = selAx + (im.x - selAx) * selSx + selDx
+                im.y = selAy + (im.y - selAy) * selSy + selDy
+                im.w *= selSx
+                im.h *= selSy
+                actions.add(Action.ImageChange(im, before, im.state()))
+            }
         }
         selStrokes = newStrokes
         selDx = 0f; selDy = 0f; selScale = 1f; selSx = 1f; selSy = 1f
@@ -2244,6 +2286,68 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         color = 0xFFFF2D78.toInt()
     }
 
+    /** The dragged image where the finger has it, snapped to the page's middle when close (with the guides). */
+    private fun placeDraggedImage(d: Doc) {
+        val item = selItem ?: return
+        val page = selPage ?: return
+        item.x = imgRawX
+        item.y = imgRawY
+        val snap = 8f * density / d.scale
+        val wasV = guideV
+        val wasH = guideH
+        val midX = page.w / 2f - item.w / 2f
+        val midY = page.h / 2f - item.h / 2f
+        guideV = abs(imgRawX - midX) < snap
+        guideH = abs(imgRawY - midY) < snap
+        if (guideV) item.x = midX
+        if (guideH) item.y = midY
+        if ((guideV && !wasV) || (guideH && !wasH)) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    }
+
+    // ---- scrolling while dragging near the top or bottom edge ----
+    /** Pixels per frame the pages scroll (> 0: towards later pages), 0 = still. */
+    private var edgeSpeed = 0f
+    private var edgeRunning = false
+
+    /** Finger at [y] while dragging: near the top or bottom edge, the pages scroll (faster closer to the edge). */
+    private fun edgeScroll(y: Float) {
+        val zone = 64f * density
+        val maxV = 22f * density
+        edgeSpeed = when {
+            y > height - zone -> ((y - (height - zone)) / zone).coerceIn(0f, 1f) * maxV
+            y < zone -> -((zone - y) / zone).coerceIn(0f, 1f) * maxV
+            else -> 0f
+        }
+        if (edgeSpeed != 0f && !edgeRunning) {
+            edgeRunning = true
+            postOnAnimation(edgeTick)
+        }
+    }
+
+    private val edgeTick: Runnable = object : Runnable {
+        override fun run() {
+            val d = doc
+            if (d == null || edgeSpeed == 0f || (mode != MODE_IMG_MOVE && mode != MODE_SEL_MOVE)) {
+                edgeRunning = false
+                return
+            }
+            val before = d.ty
+            d.ty -= edgeSpeed
+            clamp(d)
+            val moved = d.ty - before
+            if (moved != 0f) {
+                // what's being dragged stays under the finger while the pages move
+                val docDy = -moved / d.scale
+                if (mode == MODE_IMG_MOVE) {
+                    imgRawY += docDy
+                    placeDraggedImage(d)
+                } else selDy += docDy
+                invalidate()
+            }
+            postOnAnimation(this)
+        }
+    }
+
     private fun dragSelection(d: Doc, e: MotionEvent) {
         val item = selItem ?: return
         val page = selPage ?: return
@@ -2254,19 +2358,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (mode == MODE_IMG_MOVE) {
             imgRawX += (x - dragLastX) / d.scale
             imgRawY += (y - dragLastY) / d.scale
-            item.x = imgRawX
-            item.y = imgRawY
-            // close to the page's middle: snap there and show the guide
-            val snap = 8f * density / d.scale
-            val wasV = guideV
-            val wasH = guideH
-            val midX = page.w / 2f - item.w / 2f
-            val midY = page.h / 2f - item.h / 2f
-            guideV = abs(imgRawX - midX) < snap
-            guideH = abs(imgRawY - midY) < snap
-            if (guideV) item.x = midX
-            if (guideH) item.y = midY
-            if ((guideV && !wasV) || (guideH && !wasH)) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            placeDraggedImage(d)
+            edgeScroll(y)
         } else {
             val i = d.pages.indexOf(page)
             if (i < 0) return
