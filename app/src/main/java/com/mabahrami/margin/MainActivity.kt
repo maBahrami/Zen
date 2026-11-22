@@ -2518,13 +2518,13 @@ class MainActivity : ComponentActivity() {
     private fun showResumeChip(d: Doc, page: Int) {
         val stage = stageView ?: return
         val chip = TextView(this).apply {
-            text = "Continue on page ${page + 1}  ›"
-            textSize = 15f
+            text = "Continue where you left  ›"
+            textSize = 17f
             setTextColor(TEXT)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setPadding(dp(20), dp(12), dp(20), dp(12))
+            setPadding(dp(28), dp(16), dp(28), dp(16))
             background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
-                GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
+                GradientDrawable().apply { cornerRadius = dp(28).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
             elevation = dp(10).toFloat()
             alpha = 0f
             translationY = -dp(12).toFloat()
