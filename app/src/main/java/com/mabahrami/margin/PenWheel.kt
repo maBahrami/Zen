@@ -59,10 +59,10 @@ class PenWheel(context: Context) : View(context) {
     private fun dp(v: Float) = v * density
 
     // geometry
-    private val toolR = dp(24f)        // the tools sit in the middle, inside the colour ring
+    private val toolR = dp(72f)        // the tools sit around the colour ring, under the slider
     private val toolSize = dp(15.5f)
-    private val segIn = dp(47f)        // the colour ring: segments from here...
-    private val segOut = dp(80f)       // ...to here
+    private val segIn = dp(24f)        // the colour ring (smaller): segments from here...
+    private val segOut = dp(48f)       // ...to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
     private val arcR = dp(97f)
     private val ringOut = dp(86f)
@@ -162,6 +162,16 @@ class PenWheel(context: Context) : View(context) {
     private fun part(delay: Float): Float = ((progress - delay) / (1f - delay)).coerceAtLeast(0f)
 
     /** Centre of item [i] of [n] on a ring of radius [r], scaled by [p]. */
+    /** Centre of tool [i] of [n]: spread around the lower half of the ring (left to right), clear of the slider. */
+    private fun toolPos(i: Int, n: Int, p: Float, out: FloatArray) {
+        val turn = (1f - min(1f, p)) * -0.7f
+        val deg = if (n <= 1) 90.0 else 150.0 - 120.0 * i / (n - 1)
+        val a = (Math.toRadians(deg) + turn).toFloat()
+        val rr = toolR * p
+        out[0] = cx + rr * cos(a)
+        out[1] = cy + rr * sin(a)
+    }
+
     private fun pos(i: Int, n: Int, r: Float, p: Float, start: Double, out: FloatArray) {
         val turn = (1f - min(1f, p)) * -0.7f // turns in as it opens
         val a = (start + 2 * PI * i / n + turn).toFloat()
@@ -215,7 +225,7 @@ class PenWheel(context: Context) : View(context) {
         // tools (inner ring)
         val tp = part(0f)
         for ((i, it) in tools.withIndex()) {
-            pos(i, tools.size, toolR, tp, TOOL_START, tmp)
+            toolPos(i, tools.size, tp, tmp)
             val r = toolSize * min(1f, tp) * (if (it === pressed) 0.88f else 1f)
             // no disc behind the wheel: each tool has its own small dark button, so it reads on any page
             fill.shader = null
@@ -324,7 +334,7 @@ class PenWheel(context: Context) : View(context) {
     private fun hit(x: Float, y: Float): Item? {
         if (progress < 0.5f) return null
         for ((i, it) in tools.withIndex()) {
-            pos(i, tools.size, toolR, 1f, TOOL_START, tmp)
+            toolPos(i, tools.size, 1f, tmp)
             if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
         }
         // colour segments: by distance and angle
