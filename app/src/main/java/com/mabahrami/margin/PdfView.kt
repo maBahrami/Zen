@@ -347,6 +347,50 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
      * (new page before it); false = pulled up at the last page (new page at the end).
      */
     var onPullAddPage: ((atStart: Boolean, plusX: Float, plusY: Float) -> Unit)? = null
+    /** The dim + between two pages was tapped: add a page at this index. */
+    var onAddPageBetween: ((Int) -> Unit)? = null
+
+    // ---- dim "+" in the gap between pages (tap: add a page there) ----
+    private val gapPlusRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0x4DFFFFFF }
+    private val gapPlusFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x14FFFFFF }
+    private val gapPlusArm = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; color = 0x66FFFFFF; strokeCap = Paint.Cap.ROUND
+    }
+
+    /** The gap between pages is big enough on screen to show the + (not when zoomed far out). */
+    private fun gapPlusShown(d: Doc): Boolean = GAP * d.scale >= 14f * density
+
+    /** Index to insert at if (sx, sy) on screen is on the + after page i (so i + 1), else -1. */
+    private fun gapPlusAt(d: Doc, sx: Float, sy: Float): Int {
+        if (d.scale <= 0f || !gapPlusShown(d) || tops.size != d.pageCount) return -1
+        val s = d.scale
+        val cx = d.tx + contentW / 2f * s
+        val hit = 20f * density
+        if (abs(sx - cx) > hit) return -1
+        for (i in 0 until d.pageCount - 1) {
+            val cy = d.ty + (tops[i] + d.pages[i].h + GAP / 2f) * s
+            if (abs(sy - cy) <= max(hit * 0.8f, GAP * s / 2f) && hypot(sx - cx, sy - cy) <= hit) return i + 1
+        }
+        return -1
+    }
+
+    /** Draws the + in each visible gap (document coordinates). */
+    private fun drawGapPluses(d: Doc, canvas: Canvas, s: Float, visTop: Float, visBottom: Float) {
+        if (!gapPlusShown(d)) return
+        val r = 11f * density / s
+        val arm = 5f * density / s
+        gapPlusRing.strokeWidth = 1.2f * density / s
+        gapPlusArm.strokeWidth = 1.6f * density / s
+        val cx = contentW / 2f
+        for (i in 0 until d.pageCount - 1) {
+            val cy = tops[i] + d.pages[i].h + GAP / 2f
+            if (cy < visTop - r || cy > visBottom + r) continue
+            canvas.drawCircle(cx, cy, r, gapPlusFill)
+            canvas.drawCircle(cx, cy, r, gapPlusRing)
+            canvas.drawLine(cx - arm, cy, cx + arm, cy, gapPlusArm)
+            canvas.drawLine(cx, cy - arm, cx, cy + arm, gapPlusArm)
+        }
+    }
     /** Where the "+" of the pull indicator was last drawn (view px), so the page window can grow out of it. */
     private var pullPlusX = 0f
     private var pullPlusY = 0f
@@ -1677,6 +1721,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
             canvas.restore()
         }
+        drawGapPluses(d, canvas, s, visTop, visBottom)
         drawLasso(d, canvas, s)
         // selected image frame (and the image itself while dragging) on top of everything, unclipped,
         // so it can be carried across page boundaries
@@ -2259,6 +2304,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (hasLasso) {
             clearLasso(); return
         }
+        val at = gapPlusAt(d, x, y)
+        if (at >= 0) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onAddPageBetween?.invoke(at)
+            return
+        }
         val hit = imageAt(d, x, y)
         if (hit != null && !hit.second.locked) select(hit.first, hit.second) else clearSelection()
     }
@@ -2534,6 +2585,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 predictOn = pr.available(e)
             }
             mode = if (startStroke(d, x, y)) MODE_INK else MODE_NONE
+            if (mode == MODE_NONE) {
+                // pen down in the gap between pages: the + adds a page there
+                val at = gapPlusAt(d, x, y)
+                if (at >= 0) {
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onAddPageBetween?.invoke(at)
+                }
+            }
         }
     }
 
