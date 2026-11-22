@@ -2503,7 +2503,7 @@ class MainActivity : ComponentActivity() {
     private fun rememberPage(d: Doc, page: Int) {
         val t = openedAt[d.id]
         if (t != null) {
-            if (android.os.SystemClock.uptimeMillis() - t < 6000) return // still offering "Continue"
+            if (android.os.SystemClock.uptimeMillis() - t < 5000) return // still offering "Continue"
             openedAt.remove(d.id)
         }
         val keys = pageKeys(d)
@@ -2514,7 +2514,7 @@ class MainActivity : ComponentActivity() {
         main.postDelayed(saveLastPages, 1500)
     }
 
-    /** "Continue on page N ›" at the top for 5 seconds; a tap jumps there. Never blocks the document. */
+    /** "Continue where you left" for 4 seconds; a tap jumps there. Never blocks the document. */
     private fun showResumeChip(d: Doc, page: Int) {
         val stage = stageView ?: return
         val chip = LinearLayout(this).apply {
@@ -2556,7 +2556,7 @@ class MainActivity : ComponentActivity() {
             setMargins(0, maxOf(dp(90), (stage.height * 0.3f).toInt()), 0, 0)
         })
         chip.animate().alpha(1f).translationY(0f).setDuration(200).start()
-        chip.postDelayed({ if (chip.parent != null) hide() }, 5000)
+        chip.postDelayed({ if (chip.parent != null) hide() }, 4000)
     }
 
     private fun addDoc(d: Doc, makeActive: Boolean) {
