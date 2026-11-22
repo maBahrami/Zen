@@ -3966,29 +3966,48 @@ class MainActivity : ComponentActivity() {
                     renameTo = if (n != current) "$n.pdf" else null)
             }
         }
-        b.setNeutralButton("Save as new file…") { _, _ -> chooseSaveFolder(d, chosenName()) }
         b.setNegativeButton("Cancel", null)
-        compactShow(b.create(), 380)
-    }
-
-    /**
-     * "Save as new file": your favourite folders first (the save window then opens right there),
-     * or any other folder. With no favourites it goes straight to the save window.
-     */
-    private fun chooseSaveFolder(d: Doc, base: String) {
-        val favs = favoriteFolders()
-        if (favs.isEmpty()) {
-            pickSaveLocation(d, base)
-            return
+        val dlg = b.create()
+        // save as a new file: right here, your favourite folders (the save window opens inside the one you
+        // pick) and any other folder
+        box.addView(TextView(this).apply {
+            text = "SAVE AS A NEW FILE IN"
+            textSize = 11f
+            letterSpacing = 0.06f
+            setTextColor(TEXT_DIM)
+            setPadding(0, dp(16), 0, dp(4))
+        })
+        fun row(icon: Int, label: String, action: () -> Unit) {
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(10), dp(4), dp(10))
+                background = ripple()
+                isClickable = true
+                setOnClickListener {
+                    dlg.dismiss()
+                    if (docs.contains(d)) action()
+                }
+            }
+            r.addView(ImageView(this).apply {
+                setImageResource(icon)
+                imageTintList = ColorStateList.valueOf(ACCENT)
+            }, LinearLayout.LayoutParams(dp(20), dp(20)))
+            r.addView(TextView(this).apply {
+                text = label
+                textSize = 15f
+                setTextColor(TEXT)
+                setPadding(dp(12), 0, 0, 0)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            box.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        val items = ArrayList<GItem>()
-        for ((k, f) in favs.withIndex()) {
-            items.add(GItem(f.second, icon = R.drawable.ic_folder_star, header = if (k == 0) "SAVE IN" else null) {
-                if (docs.contains(d)) pickSaveLocation(d, base, folderStart(f.first))
-            })
+        for (f in favoriteFolders()) {
+            row(R.drawable.ic_folder_star, f.second) { pickSaveLocation(d, chosenName(), folderStart(f.first)) }
         }
-        items.add(GItem("Other folder…", icon = R.drawable.ic_open) { if (docs.contains(d)) pickSaveLocation(d, base) })
-        showGenieMenu(saveBtnView ?: titleBar, items)
+        row(R.drawable.ic_open, "Other folder…") { pickSaveLocation(d, chosenName()) }
+        compactShow(dlg, 380)
     }
 
     /** The document uri a picker can start in, for a favourite folder's tree uri (null if it can't). */
