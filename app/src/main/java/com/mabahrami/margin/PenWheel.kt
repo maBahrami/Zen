@@ -59,10 +59,10 @@ class PenWheel(context: Context) : View(context) {
     private fun dp(v: Float) = v * density
 
     // geometry
-    private val toolR = dp(72f)        // the tools sit around the colour ring, under the slider
+    private val toolR = dp(106f)       // the tools sit around the colour disc, under the slider
     private val toolSize = dp(15.5f)
-    private val segIn = dp(24f)        // the colour ring (smaller): segments from here...
-    private val segOut = dp(48f)       // ...to here
+    private val segIn = 0f             // the colours fill the whole disc (pie slices)...
+    private val segOut = dp(80f)       // ...out to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
     private val arcR = dp(97f)
     private val ringOut = dp(86f)
@@ -185,6 +185,13 @@ class PenWheel(context: Context) : View(context) {
     /** An annulus segment from [startDeg] sweeping [sweepDeg], between radius [rIn] and [rOut]. */
     private fun sector(path: Path, rIn: Float, rOut: Float, startDeg: Float, sweepDeg: Float) {
         path.rewind()
+        if (rIn <= 0.5f) {
+            // a pie slice from the centre
+            path.moveTo(cx, cy)
+            path.arcTo(cx - rOut, cy - rOut, cx + rOut, cy + rOut, startDeg, sweepDeg, false)
+            path.close()
+            return
+        }
         path.arcTo(cx - rOut, cy - rOut, cx + rOut, cy + rOut, startDeg, sweepDeg, true)
         path.arcTo(cx - rIn, cy - rIn, cx + rIn, cy + rIn, startDeg + sweepDeg, -sweepDeg, false)
         path.close()
@@ -265,10 +272,10 @@ class PenWheel(context: Context) : View(context) {
                 val mid = -90f + step * i + (1f - sp) * -25f
                 val sweep = (step - segGap) * sp
                 // the current colour stands out like in the top palette: taller (out and in) and lifted
-                val growOut = if (it.selected) dp(7f) else 0f
-                val growIn = if (it.selected) dp(3f) else 0f
+                val growOut = if (it.selected) dp(5f) else 0f
+                val growIn = 0f
                 val press = if (it === pressed) dp(3f) else 0f
-                val rIn = (segIn - growIn + press) * min(1f, cp)
+                val rIn = (segIn - growIn) * min(1f, cp)
                 val rOut = (segOut + growOut - press) * min(1f, cp)
                 sector(segPath, rIn, rOut, mid - sweep / 2f, sweep)
                 fill.shader = null
@@ -339,7 +346,7 @@ class PenWheel(context: Context) : View(context) {
         }
         // colour segments: by distance and angle
         val d = hypot(x - cx, y - cy)
-        if (colours.isNotEmpty() && d >= segIn - dp(4f) && d <= segOut + dp(10f)) {
+        if (colours.isNotEmpty() && d <= segOut + dp(8f)) {
             val n = colours.size
             var deg = Math.toDegrees(atan2((y - cy).toDouble(), (x - cx).toDouble())) + 90.0 + 180.0 / n
             while (deg < 0) deg += 360.0
