@@ -2526,17 +2526,22 @@ class MainActivity : ComponentActivity() {
                 setTextColor(TEXT)
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             })
-            // a chevron under the words, pointing down
-            addView(TextView(context).apply {
-                text = "›"
-                textSize = 20f
-                setTextColor(TEXT_DIM)
-                rotation = 90f
-                gravity = Gravity.CENTER
-                includeFontPadding = false
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(2)
-            })
+            // a chevron under the words, pointing down (drawn, so it's crisp in any font)
+            val vPath = android.graphics.Path().apply {
+                moveTo(2f, 2f); lineTo(12f, 10f); lineTo(22f, 2f)
+            }
+            val chevron = android.graphics.drawable.ShapeDrawable(android.graphics.drawable.shapes.PathShape(vPath, 24f, 12f)).apply {
+                paint.style = android.graphics.Paint.Style.STROKE
+                paint.strokeWidth = 2.4f
+                paint.strokeCap = android.graphics.Paint.Cap.ROUND
+                paint.strokeJoin = android.graphics.Paint.Join.ROUND
+                paint.color = TEXT_DIM
+                paint.isAntiAlias = true
+                intrinsicWidth = dp(22)
+                intrinsicHeight = dp(11)
+            }
+            addView(ImageView(context).apply { setImageDrawable(chevron) },
+                LinearLayout.LayoutParams(dp(22), dp(11)).apply { topMargin = dp(6) })
             setPadding(dp(28), dp(14), dp(28), dp(10))
             background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
                 GradientDrawable().apply { cornerRadius = dp(28).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
@@ -2561,7 +2566,10 @@ class MainActivity : ComponentActivity() {
         stage.addView(chip, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.CENTER_HORIZONTAL,
-        ).apply { setMargins(0, dp(76), 0, 0) }) // just below the floating tool bar
+        ).apply {
+            // in the upper part of the screen, towards the middle
+            setMargins(0, maxOf(dp(90), (stage.height * 0.3f).toInt()), 0, 0)
+        })
         chip.animate().alpha(1f).translationY(0f).setDuration(200).start()
         chip.postDelayed({ if (chip.parent != null) hide() }, 5000)
     }
