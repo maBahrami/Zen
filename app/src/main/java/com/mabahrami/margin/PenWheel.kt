@@ -42,6 +42,8 @@ class PenWheel(context: Context) : View(context) {
     companion object {
         const val TOOL = 0
         const val COLOUR = 1
+        /** Undo (value 0) on the left and redo (value 1) on the right; they keep the wheel open. */
+        const val ACTION = 2
         private const val ACCENT = 0xFF0A84FF.toInt()
         /** The size slider's arc over the top (degrees; 0 = right, clockwise on screen). */
         private const val ARC_START = -155.0
@@ -50,6 +52,8 @@ class PenWheel(context: Context) : View(context) {
     }
 
     var onPick: ((Item) -> Unit)? = null
+    /** Whether undo (0) / redo (1) can be done right now (asked on every frame). */
+    var canDo: (Int) -> Boolean = { true }
     /** Size slider moved: the new stop (0 until steps). */
     var onSize: ((Int) -> Unit)? = null
     /** Called once the closing animation has finished. */
@@ -61,7 +65,7 @@ class PenWheel(context: Context) : View(context) {
     // geometry
     private val toolR = dp(106f)       // the tools sit around the colour disc, under the slider
     private val toolSize = dp(15.5f)
-    private val segIn = 0f             // the colours fill the whole disc (pie slices)...
+    private val segIn = dp(47f)        // the colour ring, empty in the middle: segments from here...
     private val segOut = dp(80f)       // ...out to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
     private val arcR = dp(97f)
@@ -70,6 +74,7 @@ class PenWheel(context: Context) : View(context) {
     private val segPath = Path()
 
     private var tools: List<Item> = emptyList()
+    private var actions: List<Item> = emptyList()
     private var colours: List<Item> = emptyList()
     private var lineColour = Color.WHITE
     private var steps = 40
@@ -108,7 +113,8 @@ class PenWheel(context: Context) : View(context) {
     ) {
         screenX = tipScreenX
         screenY = tipScreenY
-        this.tools = tools
+        this.tools = tools.filter { it.kind != ACTION }
+        this.actions = tools.filter { it.kind == ACTION }
         this.colours = colours
         this.lineColour = lineColour
         this.steps = max(2, steps)
@@ -167,6 +173,15 @@ class PenWheel(context: Context) : View(context) {
         val turn = (1f - min(1f, p)) * -0.7f
         val deg = if (n <= 1) 90.0 else 150.0 - 120.0 * i / (n - 1)
         val a = (Math.toRadians(deg) + turn).toFloat()
+        val rr = toolR * p
+        out[0] = cx + rr * cos(a)
+        out[1] = cy + rr * sin(a)
+    }
+
+    /** Undo on the left side of the circle, redo on the right. */
+    private fun actionPos(item: Item, p: Float, out: FloatArray) {
+        val turn = (1f - min(1f, p)) * -0.7f
+        val a = (if (item.value == 0) PI else 0.0).toFloat() + turn
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
         out[1] = cy + rr * sin(a)
@@ -258,6 +273,25 @@ class PenWheel(context: Context) : View(context) {
             ic.draw(canvas)
         }
 
+        // undo / redo on the sides (dimmed when there's nothing to undo / redo)
+        for (it in actions) {
+            actionPos(it, tp, tmp)
+            val r = toolSize * min(1f, tp) * (if (it === pressed) 0.88f else 1f)
+            val on = canDo(it.value)
+            fill.shader = null
+            fill.color = 0xFF1C1C1E.toInt()
+            fill.alpha = (alpha * 0.94f).toInt()
+            fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
+            canvas.drawCircle(tmp[0], tmp[1], r, fill)
+            fill.clearShadowLayer()
+            val ic = it.icon ?: continue
+            val h = (r * 0.7f).toInt()
+            ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
+            ic.setTint(it.tint)
+            ic.alpha = if (on) alpha else alpha / 3
+            ic.draw(canvas)
+        }
+
         // colours: a ring of segments, the first at the top, going clockwise
         val cp = part(0.1f)
         if (cp > 0f) {
@@ -344,9 +378,13 @@ class PenWheel(context: Context) : View(context) {
             toolPos(i, tools.size, 1f, tmp)
             if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
         }
+        for (it in actions) {
+            actionPos(it, 1f, tmp)
+            if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
+        }
         // colour segments: by distance and angle
         val d = hypot(x - cx, y - cy)
-        if (colours.isNotEmpty() && d <= segOut + dp(8f)) {
+        if (colours.isNotEmpty() && d >= segIn - dp(4f) && d <= segOut + dp(8f)) {
             val n = colours.size
             var deg = Math.toDegrees(atan2((y - cy).toDouble(), (x - cx).toDouble())) + 90.0 + 180.0 / n
             while (deg < 0) deg += 360.0
@@ -402,6 +440,12 @@ class PenWheel(context: Context) : View(context) {
                 }
                 val h = hit(e.x, e.y)
                 pressed = null
+                if (h != null && h.kind == ACTION) {
+                    // undo / redo: done, and the wheel stays open for more
+                    if (canDo(h.value)) onPick?.invoke(h)
+                    invalidate()
+                    return true
+                }
                 if (h != null) onPick?.invoke(h)
                 close() // a pick, or a tap anywhere else, closes it
             }

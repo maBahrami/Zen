@@ -1020,6 +1020,8 @@ class MainActivity : ComponentActivity() {
                 Dark.ink(prefs.getInt("hl_color", YELLOW)) or opaque, drawing && hlMode),
             PenWheel.Item(PenWheel.TOOL, 2, icon(R.drawable.ic_eraser), TEXT, pdfView.eraserMode),
             PenWheel.Item(PenWheel.TOOL, 3, icon(R.drawable.ic_lasso), TEXT, pdfView.lassoMode),
+            PenWheel.Item(PenWheel.ACTION, 0, icon(R.drawable.ic_undo), TEXT, false),
+            PenWheel.Item(PenWheel.ACTION, 1, icon(R.drawable.ic_redo), TEXT, false),
         )
         // colours as the palette shows them (black shows white in dark view)
         val dark = active?.dark == true
@@ -1043,8 +1045,11 @@ class MainActivity : ComponentActivity() {
             if (pdfView.eraserMode || pdfView.lassoMode) setTool(hlMode)
             setWidth(((st + 1) * widthUnit()).coerceIn(widthUnit(), widthUnit() * 40))
         }
+        w.canDo = { v -> val d = active; d != null && (if (v == 0) d.canUndo else d.canRedo) }
         w.onPick = { item ->
-            if (item.kind == PenWheel.TOOL) when (item.value) {
+            if (item.kind == PenWheel.ACTION) {
+                if (item.value == 0) pdfView.undo() else pdfView.redo()
+            } else if (item.kind == PenWheel.TOOL) when (item.value) {
                 0 -> setTool(false)
                 1 -> setTool(true)
                 2 -> setEraser(true)
