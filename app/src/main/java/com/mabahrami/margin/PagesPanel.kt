@@ -55,6 +55,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
     var onCopyPages: ((List<Page>) -> Unit)? = null
     var onCutPages: ((List<Page>) -> Unit)? = null
     var onExportPages: ((List<Page>) -> Unit)? = null
+    var onDeletePages: ((List<Page>) -> Unit)? = null
 
     // ---- select mode: tap pages to choose several, then act on them together ----
     private var selecting = false
@@ -132,17 +133,21 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
             setBackgroundColor(0xFF1C1C1E.toInt())
             visibility = View.GONE
         }
-        fun act(label: String, cb: () -> ((List<Page>) -> Unit)?) {
+        fun act(label: String, color: Int = ACCENT, cb: () -> ((List<Page>) -> Unit)?) {
             val b = textButton(label) {
                 val ps = chosenInOrder()
                 if (ps.isNotEmpty()) cb()?.invoke(ps)
-            }.apply { gravity = Gravity.CENTER }
+            }.apply {
+                gravity = Gravity.CENTER
+                setTextColor(color)
+            }
             actions.add(b)
             actionBar.addView(b, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(2); marginEnd = dp(2) })
         }
         act("Copy") { onCopyPages }
         act("Cut") { onCutPages }
         act("Export PDF") { onExportPages }
+        act("Delete", 0xFFFF453A.toInt()) { onDeletePages }
         addView(actionBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 

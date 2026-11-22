@@ -841,6 +841,22 @@ class MainActivity : ComponentActivity() {
         pagesPanel.onAddPage = { addPageLikeLast() }
         pagesPanel.onCopyPages = { ps -> withPages(ps) { d, idx -> copyPages(d, idx, cut = false) } }
         pagesPanel.onCutPages = { ps -> withPages(ps) { d, idx -> copyPages(d, idx, cut = true) } }
+        pagesPanel.onDeletePages = { ps ->
+            val d = active
+            if (d != null && pdfView.doc === d) {
+                val there = ps.filter { d.pages.contains(it) }
+                when {
+                    there.isEmpty() -> {}
+                    there.size >= d.pageCount -> toast("Can't delete every page")
+                    pdfView.deletePages(there) -> {
+                        pagesPanel.endSelection()
+                        pagesPanel.refresh()
+                        toast(if (there.size == 1) "Page deleted (Undo brings it back)" else "${there.size} pages deleted (Undo brings them back)")
+                    }
+                    else -> toast("Couldn't delete right now · try again")
+                }
+            }
+        }
         pagesPanel.onExportPages = { ps -> active?.let { d -> startExport(d, ps.filter { d.pages.contains(it) }) } }
         body.addView(pagesPanel, LinearLayout.LayoutParams(dp(PagesPanel.WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT))
         pagesPanelDivider = divider().apply { visibility = View.GONE }
