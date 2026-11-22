@@ -124,7 +124,7 @@ class PenWheel(context: Context) : View(context) {
         val loc = IntArray(2)
         getLocationOnScreen(loc)
         // centred on the tip; moved in only as much as needed to stay on screen
-        val m = arcOut + dp(8f)
+        val m = arcOut + dp(26f)
         cx = (screenX - loc[0]).coerceIn(min(m, width / 2f), max(width - m, width / 2f))
         cy = (screenY - loc[1]).coerceIn(min(m, height / 2f), max(height - m, height / 2f))
         glass.shader = RadialGradient(cx, cy, ringOut, intArrayOf(0xF22A2A2E.toInt(), 0xF2161618.toInt()),
@@ -249,11 +249,6 @@ class PenWheel(context: Context) : View(context) {
             fill.color = lineColour
             fill.alpha = alpha
             canvas.drawCircle(cx, cy, pr, fill)
-            if (dragging) {
-                text.textSize = dp(10.5f)
-                text.alpha = alpha
-                canvas.drawText(label(stop), cx, cy - dp(14f), text)
-            }
         }
 
         // tools (inner ring)
@@ -343,6 +338,13 @@ class PenWheel(context: Context) : View(context) {
             shadow.setShadowLayer(dp(4f), 0f, dp(1f), 0x66000000)
             canvas.drawCircle(tx, ty, tr, shadow)
             shadow.clearShadowLayer()
+            // the width in points, just outside the thumb, while dragging
+            if (dragging) {
+                text.textSize = dp(11f)
+                text.alpha = alpha
+                val lr = arcR + dp(23f)
+                canvas.drawText(label(stop), cx + lr * cos(ang).toFloat(), cy + lr * sin(ang).toFloat() + dp(4f), text)
+            }
         }
     }
 
