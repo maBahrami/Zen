@@ -88,7 +88,6 @@ class PenWheel(context: Context) : View(context) {
     private var closing = false
     private var anim: ValueAnimator? = null
 
-    private val glass = Paint(Paint.ANTI_ALIAS_FLAG)
     private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -126,8 +125,6 @@ class PenWheel(context: Context) : View(context) {
         val m = arcOut + dp(26f)
         cx = (screenX - loc[0]).coerceIn(min(m, width / 2f), max(width - m, width / 2f))
         cy = (screenY - loc[1]).coerceIn(min(m, height / 2f), max(height - m, height / 2f))
-        glass.shader = RadialGradient(cx, cy, ringOut, intArrayOf(0xF22A2A2E.toInt(), 0xF2161618.toInt()),
-            null, Shader.TileMode.CLAMP)
     }
 
     override fun onAttachedToWindow() {
@@ -215,44 +212,26 @@ class PenWheel(context: Context) : View(context) {
         val s = min(1f, p)
         val sliderP = min(1f, part(0.2f))
 
-        // soft shadow under the disc
-        shadow.color = 0xFF161618.toInt()
-        shadow.alpha = alpha
-        shadow.setShadowLayer(dp(16f) * s, 0f, dp(4f) * s, ((0x70 * a).toInt() shl 24))
-        canvas.drawCircle(cx, cy, ringOut * p, shadow)
-        shadow.clearShadowLayer()
-
-        // the glass disc (the size slider above it has no background: just its wedge and thumb)
-        glass.alpha = alpha
-        canvas.drawCircle(cx, cy, ringOut * p, glass)
-        // fine light rims
-        edge.color = 0x33FFFFFF
-        edge.alpha = (0x33 * a).toInt()
-        canvas.drawCircle(cx, cy, ringOut * p, edge)
-        edge.color = 0x14FFFFFF
-        edge.alpha = (0x14 * a).toInt()
-        canvas.drawCircle(cx, cy, (segIn - dp(2f)) * p, edge)
-
         // tools (inner ring)
         val tp = part(0f)
         for ((i, it) in tools.withIndex()) {
             pos(i, tools.size, toolR, tp, TOOL_START, tmp)
             val r = toolSize * min(1f, tp) * (if (it === pressed) 0.88f else 1f)
+            // no disc behind the wheel: each tool has its own small dark button, so it reads on any page
             fill.shader = null
+            fill.color = 0xFF1C1C1E.toInt()
+            fill.alpha = (alpha * 0.94f).toInt()
+            fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
+            canvas.drawCircle(tmp[0], tmp[1], r, fill)
+            fill.clearShadowLayer()
             if (it.selected) {
                 fill.color = ACCENT
-                fill.alpha = (alpha * 0.18f).toInt()
-                canvas.drawCircle(tmp[0], tmp[1], r + dp(3.5f), fill) // glow
-                fill.alpha = (alpha * 0.22f).toInt()
+                fill.alpha = (alpha * 0.25f).toInt()
                 canvas.drawCircle(tmp[0], tmp[1], r, fill)
                 ring.color = ACCENT
                 ring.alpha = alpha
-                ring.strokeWidth = dp(1.5f)
+                ring.strokeWidth = dp(1.6f)
                 canvas.drawCircle(tmp[0], tmp[1], r, ring)
-            } else {
-                fill.color = 0x16FFFFFF
-                fill.alpha = (0x16 * a).toInt()
-                canvas.drawCircle(tmp[0], tmp[1], r, fill)
             }
             val ic = it.icon ?: continue
             val h = (r * 0.7f).toInt()
