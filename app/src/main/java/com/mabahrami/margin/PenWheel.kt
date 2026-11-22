@@ -63,7 +63,7 @@ class PenWheel(context: Context) : View(context) {
     private val toolSize = dp(15.5f)
     private val segIn = dp(47f)        // the colour ring: segments from here...
     private val segOut = dp(80f)       // ...to here
-    private val segGap = 3.2f          // degrees between segments
+    private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
     private val arcR = dp(97f)
     private val ringOut = dp(86f)
     private val arcOut = dp(110f)
