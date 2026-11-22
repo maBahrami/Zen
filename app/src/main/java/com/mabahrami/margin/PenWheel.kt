@@ -46,8 +46,10 @@ class PenWheel(context: Context) : View(context) {
         const val ACTION = 2
         private const val ACCENT = 0xFF0A84FF.toInt()
         /** The size slider's arc over the top (degrees; 0 = right, clockwise on screen). */
-        private const val ARC_START = -155.0
-        private const val ARC_SPAN = 130.0
+        private const val ARC_START = -150.0
+        private const val ARC_SPAN = 120.0
+        /** Size steps (− and +) just past each end of the slider (degrees). */
+        private const val STEP_GAP = 15.0
         private const val TOOL_START = -PI * 3 / 4
     }
 
@@ -63,8 +65,9 @@ class PenWheel(context: Context) : View(context) {
     private fun dp(v: Float) = v * density
 
     // geometry
-    private val toolR = dp(106f)       // the tools sit around the colour disc, under the slider
-    private val toolSize = dp(15.5f)
+    private val toolR = dp(110f)       // the tools sit around the colour disc, under the slider
+    private val toolSize = dp(19f)     // larger buttons: easier to tap
+    private val stepSize = dp(12.5f)   // the − / + buttons at the ends of the size slider
     private val segIn = dp(38f)        // the colour ring, empty in the middle: segments from here...
     private val segOut = dp(80f)       // ...out to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
@@ -171,7 +174,7 @@ class PenWheel(context: Context) : View(context) {
     /** Centre of tool [i] of [n]: spread around the lower half of the ring (left to right), clear of the slider. */
     private fun toolPos(i: Int, n: Int, p: Float, out: FloatArray) {
         val turn = (1f - min(1f, p)) * -0.7f
-        val deg = if (n <= 1) 90.0 else 150.0 - 120.0 * i / (n - 1)
+        val deg = if (n <= 1) 90.0 else 140.0 - 100.0 * i / (n - 1)
         val a = (Math.toRadians(deg) + turn).toFloat()
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
@@ -186,7 +189,7 @@ class PenWheel(context: Context) : View(context) {
             out[1] = cy
             return
         }
-        val a = (if (item.value == 0) PI else 0.0).toFloat() + turn
+        val a = Math.toRadians(if (item.value == 0) 168.0 else 12.0).toFloat() + turn
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
         out[1] = cy + rr * sin(a)
@@ -216,6 +219,29 @@ class PenWheel(context: Context) : View(context) {
         path.arcTo(cx - rIn, cy - rIn, cx + rIn, cy + rIn, startDeg + sweepDeg, -sweepDeg, false)
         path.close()
     }
+
+    /** Centre of the − (left end) or + (right end) button of the size slider. */
+    private fun stepPos(plus: Boolean, p: Float, out: FloatArray) {
+        val deg = if (plus) ARC_START + ARC_SPAN + STEP_GAP else ARC_START - STEP_GAP
+        val a = Math.toRadians(deg)
+        out[0] = cx + arcR * p * cos(a).toFloat()
+        out[1] = cy + arcR * p * sin(a).toFloat()
+    }
+
+    /** Which step button (−1 = minus, +1 = plus) is under (x, y), or 0. */
+    private fun stepAt(x: Float, y: Float): Int {
+        if (progress < 0.5f) return 0
+        stepPos(false, 1f, tmp)
+        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(7f)) return -1
+        stepPos(true, 1f, tmp)
+        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(7f)) return 1
+        return 0
+    }
+
+    private var pressedStep = 0
+    /** Show the width label after a − / + step (for a moment). */
+    private var showLabel = false
+    private val hideLabel = Runnable { showLabel = false; invalidate() }
 
     private fun arcAngle(t: Float): Double = Math.toRadians(ARC_START + ARC_SPAN * t)
 
@@ -354,8 +380,27 @@ class PenWheel(context: Context) : View(context) {
             shadow.setShadowLayer(dp(4f), 0f, dp(1f), 0x66000000)
             canvas.drawCircle(tx, ty, tr, shadow)
             shadow.clearShadowLayer()
-            // the width in points, just outside the thumb, while dragging
-            if (dragging) {
+            // − and + at the ends: one step thinner / thicker
+            for (plus in booleanArrayOf(false, true)) {
+                stepPos(plus, sliderP, tmp)
+                val r = stepSize * sliderP * (if (pressedStep == (if (plus) 1 else -1)) 0.88f else 1f)
+                fill.shader = null
+                fill.color = 0xFF1C1C1E.toInt()
+                fill.alpha = (alpha * 0.94f).toInt()
+                fill.setShadowLayer(dp(4f), 0f, dp(1f), ((0x55 * a).toInt() shl 24))
+                canvas.drawCircle(tmp[0], tmp[1], r, fill)
+                fill.clearShadowLayer()
+                ring.color = Color.WHITE
+                ring.alpha = alpha
+                ring.strokeWidth = dp(1.8f)
+                ring.strokeCap = Paint.Cap.ROUND
+                val arm = r * 0.45f
+                canvas.drawLine(tmp[0] - arm, tmp[1], tmp[0] + arm, tmp[1], ring)
+                if (plus) canvas.drawLine(tmp[0], tmp[1] - arm, tmp[0], tmp[1] + arm, ring)
+                ring.strokeCap = Paint.Cap.BUTT
+            }
+            // the width in points, just outside the thumb, while dragging (or just after a step)
+            if (dragging || showLabel) {
                 text.textSize = dp(11f)
                 text.alpha = alpha
                 val lr = arcR + dp(23f)
@@ -421,6 +466,11 @@ class PenWheel(context: Context) : View(context) {
         if (closing) return true
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                pressedStep = stepAt(e.x, e.y)
+                if (pressedStep != 0) {
+                    invalidate()
+                    return true
+                }
                 val st = if (progress >= 0.5f) sliderAt(e.x, e.y, false) else -1
                 if (st >= 0) {
                     dragging = true
@@ -438,6 +488,19 @@ class PenWheel(context: Context) : View(context) {
                 }
             }
             MotionEvent.ACTION_UP -> {
+                if (pressedStep != 0) {
+                    // one step thinner / thicker; the wheel stays open
+                    val step = pressedStep
+                    pressedStep = 0
+                    if (stepAt(e.x, e.y) == step) {
+                        showLabel = true // the width shows next to the thumb for a moment
+                        setStop((stop + step).coerceIn(0, steps - 1))
+                        removeCallbacks(hideLabel)
+                        postDelayed(hideLabel, 900)
+                    }
+                    invalidate()
+                    return true
+                }
                 if (dragging) {
                     dragging = false // the size is set; the menu stays open
                     invalidate()
@@ -455,6 +518,7 @@ class PenWheel(context: Context) : View(context) {
                 close() // a pick, or a tap anywhere else, closes it
             }
             MotionEvent.ACTION_CANCEL -> {
+                pressedStep = 0
                 pressed = null
                 dragging = false
                 close()
