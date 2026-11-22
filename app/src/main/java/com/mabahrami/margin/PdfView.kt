@@ -64,7 +64,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         const val FAST_LEFT = 1
         const val FAST_BOTH = 2
         /** Straight highlighter snaps to horizontal/vertical within this many degrees. */
-        private const val MAGNET_DEG = 1.5
+        /** Straightened lines within this many degrees of level (0°) or upright (90°) snap to it exactly. */
+        private const val MAGNET_DEG = 2.0
     }
 
     var onChange: ((Doc) -> Unit)? = null
@@ -2653,6 +2654,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         liveSize = r.pts.size
         livePoly = r.poly
         snapped = if (r.isLine) 1 else 2
+        if (snapped == 1 && liveSize >= 4) {
+            // magnetic levelling right away (the end then keeps following the pen, levelled too)
+            val m = levelMagnet(d, livePts[2] - livePts[0], livePts[3] - livePts[1])
+            if (m == 1) livePts[3] = livePts[1]
+            if (m == 2) livePts[2] = livePts[0]
+            lastMagnet = m
+        }
         livePath = strokePath(livePts, liveSize, livePoly, liveStyle, liveWidth); liveInk = null
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         invalidate()
@@ -2664,17 +2672,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (i < 0 || i >= d.pageCount || liveSize < 4) return
         var ex = (x - d.tx) / d.scale - (pl(i) + mlOf(d, i))
         var ey = (y - d.ty) / d.scale - tops[i]
-        if (liveHighlighter && hlStraight) {
-            // magnetic: snap to exactly horizontal (0°) or vertical (90°) when close
-            val dx = ex - livePts[0]
-            val dy = ey - livePts[1]
-            val ang = Math.toDegrees(kotlin.math.atan2(abs(dy).toDouble(), abs(dx).toDouble()))
-            val magnet = when {
-                hypot(dx, dy) < 6f * density / d.scale -> 0
-                ang < MAGNET_DEG -> 1
-                ang > 90.0 - MAGNET_DEG -> 2
-                else -> 0
-            }
+        run {
+            // magnetic (any straightened line, pen or highlighter): exactly level (0°) or upright (90°) when close
+            val magnet = levelMagnet(d, ex - livePts[0], ey - livePts[1])
             if (magnet == 1) ey = livePts[1]
             if (magnet == 2) ex = livePts[0]
             if (magnet != 0 && magnet != lastMagnet) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -2685,6 +2685,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     private var lastMagnet = 0
+
+    /** 1 = close to level (0°), 2 = close to upright (90°), 0 = neither (or the line is still too short). */
+    private fun levelMagnet(d: Doc, dx: Float, dy: Float): Int {
+        if (hypot(dx, dy) < 6f * density / d.scale) return 0
+        val ang = Math.toDegrees(kotlin.math.atan2(abs(dy).toDouble(), abs(dx).toDouble()))
+        return when {
+            ang <= MAGNET_DEG -> 1
+            ang >= 90.0 - MAGNET_DEG -> 2
+            else -> 0
+        }
+    }
 
     private fun cancelLive() {
         removeCallbacks(holdRunnable)
