@@ -2,7 +2,7 @@
 
 A minimal PDF annotator for the Samsung Galaxy Tab S9+ (S Pen), built for studying papers and lecture notes.
 
-**Version 1.3** · [Download the latest APK](https://github.com/maBahrami/Zen/releases/latest)
+**Version 1.4** · [Download the latest APK](https://github.com/maBahrami/Zen/releases/latest)
 
 ## Features
 
