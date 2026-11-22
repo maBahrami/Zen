@@ -839,6 +839,11 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private fun finishLasso() {
         val page = lassoPage
         mode = MODE_NONE
+        if (page != null && lassoSize >= 2 && lassoIsTap()) {
+            // a tap (no loop drawn): select the one stroke or image under the pen tip
+            if (selectAtTap(page, lassoPts[0], lassoPts[1])) return
+            clearLasso(); return
+        }
         if (page == null || lassoSize < 6) {
             clearLasso(); return
         }
@@ -858,6 +863,37 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         selImages = images
         recomputeSelBox()
         invalidate()
+    }
+
+    /** The lasso stayed within a few dp of where it started: it was a tap, not a loop. */
+    private fun lassoIsTap(): Boolean {
+        val d = doc ?: return false
+        val lim = 10f * density / d.scale
+        var k = 0
+        while (k + 1 < lassoSize) {
+            if (hypot(lassoPts[k] - lassoPts[0], lassoPts[k + 1] - lassoPts[1]) > lim) return false
+            k += 2
+        }
+        return true
+    }
+
+    /**
+     * Lasso tap at (x, y) (page-local): selects the topmost stroke within reach of the tip (the whole
+     * stroke: a line, a box, a word written in one go), or else the image under it. False if nothing's there.
+     */
+    private fun selectAtTap(page: Page, x: Float, y: Float): Boolean {
+        val d = doc ?: return false
+        val r = 8f * density / d.scale
+        val st = page.strokes.lastOrNull { it.hits(x, y, r) }
+        val im = if (st == null) page.images.lastOrNull { !it.locked && it.contains(x, y) } else null
+        if (st == null && im == null) return false
+        lassoSize = 0
+        selStrokes = if (st != null) listOf(st) else emptyList()
+        selImages = if (im != null) listOf(im) else emptyList()
+        recomputeSelBox()
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        invalidate()
+        return true
     }
 
     /** Pen or finger on the selection: drag inside to move, a corner to scale. */
