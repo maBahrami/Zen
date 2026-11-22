@@ -2528,7 +2528,8 @@ class MainActivity : ComponentActivity() {
             })
             setPadding(dp(28), dp(16), dp(28), dp(16))
             background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
-                GradientDrawable().apply { cornerRadius = dp(28).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
+                // a soft blue, so it stands out on dark pages too
+                GradientDrawable().apply { cornerRadius = dp(28).toFloat(); setColor(0xF2234A78.toInt()); setStroke(dp(1), 0x804DA3FF) }, null)
             elevation = dp(10).toFloat()
             alpha = 0f
             translationY = -dp(12).toFloat()
