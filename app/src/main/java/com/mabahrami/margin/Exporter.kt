@@ -329,7 +329,7 @@ object Exporter {
     /** Draws images then strokes, in page-local "visual" coordinates (y down). */
     private fun drawOverlay(doc: PDDocument, cs: PDPageContentStream, p: PageSnap, images: HashMap<File, PDImageXObject?>) {
         drawImages(doc, cs, p.images.filter { !it.front }, images)
-        drawWriting(cs, p)
+        drawWriting(doc, cs, p)
         drawImages(doc, cs, p.images.filter { it.front }, images) // brought to the front: over the writing
     }
 
@@ -357,7 +357,7 @@ object Exporter {
         }
     }
 
-    private fun drawWriting(cs: PDPageContentStream, p: PageSnap) {
+    private fun drawWriting(doc: PDDocument, cs: PDPageContentStream, p: PageSnap) {
         if (p.strokes.isNotEmpty()) {
             cs.setLineCapStyle(1)
             cs.setLineJoinStyle(1)
