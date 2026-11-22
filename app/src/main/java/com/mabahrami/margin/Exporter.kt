@@ -367,15 +367,33 @@ object Exporter {
                     gcs.setLineJoinStyle(1)
                     for (s in p.strokes) if (s.highlighter) drawStroke(gcs, s)
                 }
-                val gs = PDExtendedGraphicsState()
-                val dict = gs.getCOSObject()
-                dict.setItem(COSName.BM, COSName.getPDFName("Multiply"))
-                dict.setFloat(COSName.getPDFName("ca"), HIGHLIGHT_ALPHA)
-                dict.setFloat(COSName.CA, HIGHLIGHT_ALPHA)
-                cs.saveGraphicsState()
-                cs.setGraphicsStateParameters(gs)
-                cs.drawForm(group)
-                cs.restoreGraphicsState()
+                fun paint(blend: String, alpha: Float) {
+                    val gs = PDExtendedGraphicsState()
+                    val dict = gs.getCOSObject()
+                    dict.setItem(COSName.BM, COSName.getPDFName(blend))
+                    dict.setFloat(COSName.getPDFName("ca"), alpha)
+                    dict.setFloat(COSName.CA, alpha)
+                    cs.setGraphicsStateParameters(gs)
+                    cs.drawForm(group)
+                }
+                if (p.images.isEmpty()) {
+                    cs.saveGraphicsState()
+                    paint("Multiply", HIGHLIGHT_ALPHA)
+                    cs.restoreGraphicsState()
+                } else {
+                    // as on screen: multiply on the paper, a plain see-through colour over pasted images
+                    cs.saveGraphicsState()
+                    cs.addRect(-20000f, -20000f, 40000f, 40000f)
+                    for (im in p.images) cs.addRect(im.x, im.y, im.w, im.h)
+                    cs.clipEvenOdd() // everywhere except the images
+                    paint("Multiply", HIGHLIGHT_ALPHA)
+                    cs.restoreGraphicsState()
+                    cs.saveGraphicsState()
+                    for (im in p.images) cs.addRect(im.x, im.y, im.w, im.h)
+                    cs.clip() // only the images
+                    paint("Normal", HIGHLIGHT_OVER_IMAGE_ALPHA)
+                    cs.restoreGraphicsState()
+                }
             }
             for (s in p.strokes) if (!s.highlighter) drawStroke(cs, s)
         }

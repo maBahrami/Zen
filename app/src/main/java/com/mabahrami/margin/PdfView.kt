@@ -644,6 +644,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         alpha = (HIGHLIGHT_ALPHA * 255).toInt()
     }
 
+    /** Highlights over pasted images: plain see-through colour (visible on dark and light pictures alike). */
+    private val hlOverImagePaint = Paint().apply { alpha = (HIGHLIGHT_OVER_IMAGE_ALPHA * 255).toInt() }
+    private val hlImgClip = Path().apply { fillType = Path.FillType.WINDING }
+
     /** Highlights multiply onto light paper; on dark paper they screen (the dark twin), so they still show. */
     private fun hlBlend(p: Paint) {
         p.blendMode = if (darkView) android.graphics.BlendMode.SCREEN else android.graphics.BlendMode.MULTIPLY
@@ -1678,18 +1682,41 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             val liveHere = mode == MODE_INK && livePage === page && lp != null
             if ((liveHere && liveHighlighter) || page.strokes.any { it.highlighter }) {
                 hlBounds.set(-pl, 0f, page.w + pr, page.h.toFloat())
-                canvas.saveLayer(hlBounds, hlLayerPaint)
-                for (st in page.strokes) {
-                    if (!st.highlighter) continue
-                    if (hideSel && isSelected(st)) continue
-                    hlStyle(st.color, st.width)
-                    canvas.drawPath(st.path, hlPaint)
+                fun highlights() {
+                    for (st in page.strokes) {
+                        if (!st.highlighter) continue
+                        if (hideSel && isSelected(st)) continue
+                        hlStyle(st.color, st.width)
+                        canvas.drawPath(st.path, hlPaint)
+                    }
+                    if (liveHere && liveHighlighter) {
+                        hlStyle(liveColor, liveWidth)
+                        canvas.drawPath(lp!!, hlPaint)
+                    }
                 }
-                if (liveHere && liveHighlighter) {
-                    hlStyle(liveColor, liveWidth)
-                    canvas.drawPath(lp!!, hlPaint)
+                val imgs = page.images
+                if (imgs.isEmpty()) {
+                    canvas.saveLayer(hlBounds, hlLayerPaint)
+                    highlights()
+                    canvas.restore()
+                } else {
+                    // on the paper: multiply (text stays crisp); over pasted images: a plain see-through
+                    // colour, so it also shows on dark pictures (multiply would vanish on black)
+                    canvas.save()
+                    for (im in imgs) canvas.clipOutRect(im.x, im.y, im.x + im.w, im.y + im.h)
+                    canvas.saveLayer(hlBounds, hlLayerPaint)
+                    highlights()
+                    canvas.restore()
+                    canvas.restore()
+                    canvas.save()
+                    hlImgClip.rewind()
+                    for (im in imgs) hlImgClip.addRect(im.x, im.y, im.x + im.w, im.y + im.h, Path.Direction.CW)
+                    canvas.clipPath(hlImgClip)
+                    canvas.saveLayer(hlBounds, hlOverImagePaint)
+                    highlights()
+                    canvas.restore()
+                    canvas.restore()
                 }
-                canvas.restore()
             }
             for (st in page.strokes) {
                 if (st.highlighter) continue

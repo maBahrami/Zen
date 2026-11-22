@@ -96,6 +96,9 @@ class Stroke(
 /** Highlighter strength (0..1) for multiply blending, on screen and in the PDF. */
 const val HIGHLIGHT_ALPHA = 0.55f
 
+/** Highlighter strength over pasted images, drawn as a plain see-through colour (screen and PDF). */
+const val HIGHLIGHT_OVER_IMAGE_ALPHA = 0.4f
+
 const val LINE_SOLID = 0
 const val LINE_DASHED = 1
 const val LINE_DOTTED = 2
