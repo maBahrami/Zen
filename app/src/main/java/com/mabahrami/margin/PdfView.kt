@@ -351,6 +351,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     var onAddPageBetween: ((Int) -> Unit)? = null
 
     // ---- dim "+" in the gap between pages (tap: add a page there) ----
+    private val gapPlusBorder = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0x24FFFFFF }
     private val gapPlusArm = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; color = 0x40FFFFFF; strokeCap = Paint.Cap.ROUND
     }
@@ -377,11 +378,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (!gapPlusShown(d)) return
         // just a small, thin, faint plus: there when you look for it, not catching the eye
         val arm = 4f * density / s
+        val r = 8.5f * density / s
         gapPlusArm.strokeWidth = 1.1f * density / s
+        gapPlusBorder.strokeWidth = 1f * density / s
         val cx = contentW / 2f
         for (i in 0 until d.pageCount - 1) {
             val cy = tops[i] + d.pages[i].h + GAP / 2f
-            if (cy < visTop - arm || cy > visBottom + arm) continue
+            if (cy < visTop - r || cy > visBottom + r) continue
+            canvas.drawCircle(cx, cy, r, gapPlusBorder) // a dim border
             canvas.drawLine(cx - arm, cy, cx + arm, cy, gapPlusArm)
             canvas.drawLine(cx, cy - arm, cx, cy + arm, gapPlusArm)
         }
