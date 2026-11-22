@@ -3977,12 +3977,22 @@ class MainActivity : ComponentActivity() {
             setTextColor(TEXT_DIM)
             setPadding(0, dp(16), 0, dp(4))
         })
-        fun row(icon: Int, label: String, action: () -> Unit) {
+        fun row(icon: Int, label: String, other: Boolean = false, action: () -> Unit) {
             val r = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), dp(10), dp(4), dp(10))
-                background = ripple()
+                if (other) {
+                    // set apart: an outlined button, dimmer, not one of the folders
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    background = ripple(GradientDrawable().apply {
+                        cornerRadius = dp(10).toFloat()
+                        setColor(0x0FFFFFFF)
+                        setStroke(dp(1), 0x40FFFFFF, dp(5).toFloat(), dp(4).toFloat())
+                    })
+                } else {
+                    setPadding(dp(4), dp(10), dp(4), dp(10))
+                    background = ripple()
+                }
                 isClickable = true
                 setOnClickListener {
                     dlg.dismiss()
@@ -3991,22 +4001,24 @@ class MainActivity : ComponentActivity() {
             }
             r.addView(ImageView(this).apply {
                 setImageResource(icon)
-                imageTintList = ColorStateList.valueOf(ACCENT)
+                imageTintList = ColorStateList.valueOf(if (other) TEXT_DIM else ACCENT)
             }, LinearLayout.LayoutParams(dp(20), dp(20)))
             r.addView(TextView(this).apply {
                 text = label
-                textSize = 15f
-                setTextColor(TEXT)
+                textSize = if (other) 14f else 15f
+                setTextColor(if (other) TEXT_DIM else TEXT)
                 setPadding(dp(12), 0, 0, 0)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            box.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            box.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                if (other) topMargin = dp(10)
+            })
         }
         for (f in favoriteFolders()) {
             row(R.drawable.ic_folder_star, f.second) { pickSaveLocation(d, chosenName(), folderStart(f.first)) }
         }
-        row(R.drawable.ic_open, "Other folder…") { pickSaveLocation(d, chosenName()) }
+        row(R.drawable.ic_open, "Choose another folder…", other = true) { pickSaveLocation(d, chosenName()) }
         compactShow(dlg, 380)
     }
 
