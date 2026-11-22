@@ -2517,12 +2517,27 @@ class MainActivity : ComponentActivity() {
     /** "Continue on page N ›" at the top for 5 seconds; a tap jumps there. Never blocks the document. */
     private fun showResumeChip(d: Doc, page: Int) {
         val stage = stageView ?: return
-        val chip = TextView(this).apply {
-            text = "Continue where you left  ›"
-            textSize = 17f
-            setTextColor(TEXT)
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setPadding(dp(28), dp(16), dp(28), dp(16))
+        val chip = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            addView(TextView(context).apply {
+                text = "Continue where you left"
+                textSize = 17f
+                setTextColor(TEXT)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            })
+            // a chevron under the words, pointing down
+            addView(TextView(context).apply {
+                text = "›"
+                textSize = 20f
+                setTextColor(TEXT_DIM)
+                rotation = 90f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(2)
+            })
+            setPadding(dp(28), dp(14), dp(28), dp(10))
             background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
                 GradientDrawable().apply { cornerRadius = dp(28).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
             elevation = dp(10).toFloat()
