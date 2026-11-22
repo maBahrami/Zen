@@ -84,7 +84,8 @@ object Store {
         for (dir in trashRoot(ctx).listFiles() ?: emptyArray()) {
             if (!dir.isDirectory || !File(dir, "source.pdf").exists()) continue
             val at = try { File(dir, "closed_at").readText().trim().toLong() } catch (e: Exception) { dir.lastModified() }
-            val name = try {
+            // the name is near the start of state.json: read just that, not the whole (possibly huge) file
+            val name = quickName(File(dir, "state.json")) ?: try {
                 readJsonText(File(dir, "state.json"))?.let { JSONObject(it).optString("name") }?.takeIf { it.isNotEmpty() }
             } catch (e: Exception) {
                 null
@@ -93,6 +94,23 @@ object Store {
         }
         out.sortByDescending { it.closedAt }
         return out
+    }
+
+    private val NAME_FIELD = Regex("\"name\":\"((?:[^\"\\\\]|\\\\.)*)\"")
+
+    /** The document name from the first few KB of a state.json, or null if it isn't there (then read it all). */
+    private fun quickName(f: File): String? = try {
+        val buf = ByteArray(8192)
+        val n = f.inputStream().use { it.read(buf) }
+        if (n <= 0) null else {
+            val head = String(buf, 0, n, Charsets.UTF_8)
+            NAME_FIELD.find(head)?.groupValues?.get(1)?.let { raw ->
+                // let JSON undo the escaping (quotes, backslashes, \u codes)
+                JSONObject("{\"n\":\"" + raw + "\"}").optString("n")
+            }?.takeIf { it.isNotEmpty() }
+        }
+    } catch (e: Exception) {
+        null
     }
 
     /** Moves a closed tab back; returns its new folder. */
