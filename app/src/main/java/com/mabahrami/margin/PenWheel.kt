@@ -47,7 +47,6 @@ class PenWheel(context: Context) : View(context) {
         private const val ARC_START = -155.0
         private const val ARC_SPAN = 130.0
         private const val TOOL_START = -PI * 3 / 4
-        private const val COLOUR_START = PI / 2
     }
 
     var onPick: ((Item) -> Unit)? = null
@@ -60,13 +59,15 @@ class PenWheel(context: Context) : View(context) {
     private fun dp(v: Float) = v * density
 
     // geometry
-    private val toolR = dp(38f)
-    private val toolSize = dp(16.5f)
-    private val colourR = dp(70f)
-    private val colourSize = dp(11.5f)
-    private val arcR = dp(96f)
+    private val toolR = dp(25f)        // the tools sit in the middle, inside the colour ring
+    private val toolSize = dp(13.5f)
+    private val segIn = dp(47f)        // the colour ring: segments from here...
+    private val segOut = dp(80f)       // ...to here
+    private val segGap = 3.2f          // degrees between segments
+    private val arcR = dp(97f)
     private val ringOut = dp(86f)
     private val arcOut = dp(110f)
+    private val segPath = Path()
 
     private var tools: List<Item> = emptyList()
     private var colours: List<Item> = emptyList()
@@ -175,6 +176,14 @@ class PenWheel(context: Context) : View(context) {
 
     private val tmp = FloatArray(2)
 
+    /** An annulus segment from [startDeg] sweeping [sweepDeg], between radius [rIn] and [rOut]. */
+    private fun sector(path: Path, rIn: Float, rOut: Float, startDeg: Float, sweepDeg: Float) {
+        path.rewind()
+        path.arcTo(cx - rOut, cy - rOut, cx + rOut, cy + rOut, startDeg, sweepDeg, true)
+        path.arcTo(cx - rIn, cy - rIn, cx + rIn, cy + rIn, startDeg + sweepDeg, -sweepDeg, false)
+        path.close()
+    }
+
     private fun arcAngle(t: Float): Double = Math.toRadians(ARC_START + ARC_SPAN * t)
 
     /** The size slider as a wedge along the arc, from [t0] to [t1] (0..1), thin to thick, scaled by [p]. */
@@ -231,7 +240,7 @@ class PenWheel(context: Context) : View(context) {
         canvas.drawCircle(cx, cy, ringOut * p, edge)
         edge.color = 0x14FFFFFF
         edge.alpha = (0x14 * a).toInt()
-        canvas.drawCircle(cx, cy, (toolR + colourR) / 2f * p, edge)
+        canvas.drawCircle(cx, cy, (segIn - dp(5f)) * p, edge)
 
         // centre: the current line's colour and size (its width in points while dragging the size)
         run {
@@ -276,31 +285,38 @@ class PenWheel(context: Context) : View(context) {
             ic.draw(canvas)
         }
 
-        // colours (middle ring): glossy beads
+        // colours: a ring of segments, the first at the top, going clockwise
         val cp = part(0.1f)
-        if (cp > 0f) for ((i, it) in colours.withIndex()) {
-            pos(i, colours.size, colourR, cp, COLOUR_START, tmp)
-            val big = if (it.selected) 1.18f else 1f
-            val r = colourSize * min(1f, cp) * big * (if (it === pressed) 0.86f else 1f)
-            if (r <= 0.5f) continue
-            fill.shader = null
-            fill.color = it.tint
-            fill.alpha = alpha
-            canvas.drawCircle(tmp[0], tmp[1], r, fill)
-            shine.shader = RadialGradient(tmp[0] - r * 0.35f, tmp[1] - r * 0.4f, r * 1.1f,
-                intArrayOf(0x55FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
-            shine.alpha = alpha
-            canvas.drawCircle(tmp[0], tmp[1], r, shine)
-            if (it.selected) {
-                ring.color = Color.WHITE
-                ring.alpha = alpha
-                ring.strokeWidth = dp(2f)
-                canvas.drawCircle(tmp[0], tmp[1], r + dp(3f), ring)
-            } else {
-                ring.color = 0x33FFFFFF
-                ring.alpha = (0x33 * a).toInt()
-                ring.strokeWidth = 1f
-                canvas.drawCircle(tmp[0], tmp[1], r, ring)
+        if (cp > 0f) {
+            val n = colours.size
+            val step = 360f / n
+            for ((i, it) in colours.withIndex()) {
+                // each segment sweeps in a moment after the one before
+                val sp = ((cp * 1.25f) - i * 0.25f / n).coerceIn(0f, 1f)
+                if (sp <= 0f) continue
+                val mid = -90f + step * i + (1f - sp) * -25f
+                val sweep = (step - segGap) * sp
+                val grow = if (it.selected) dp(6f) else 0f
+                val press = if (it === pressed) dp(3f) else 0f
+                val rIn = (segIn + press) * min(1f, cp)
+                val rOut = (segOut + grow - press) * min(1f, cp)
+                sector(segPath, rIn, rOut, mid - sweep / 2f, sweep)
+                fill.shader = null
+                fill.color = it.tint
+                fill.alpha = alpha
+                canvas.drawPath(segPath, fill)
+                // a soft sheen from the top-left
+                shine.shader = RadialGradient(cx - rOut * 0.5f, cy - rOut * 0.6f, rOut * 1.6f,
+                    intArrayOf(0x30FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
+                shine.alpha = alpha
+                canvas.drawPath(segPath, shine)
+                if (it.selected) {
+                    ring.color = Color.WHITE
+                    ring.alpha = alpha
+                    ring.strokeWidth = dp(2.2f)
+                    ring.strokeJoin = Paint.Join.ROUND
+                    canvas.drawPath(segPath, ring)
+                }
             }
         }
 
@@ -349,9 +365,14 @@ class PenWheel(context: Context) : View(context) {
             pos(i, tools.size, toolR, 1f, TOOL_START, tmp)
             if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
         }
-        for ((i, it) in colours.withIndex()) {
-            pos(i, colours.size, colourR, 1f, COLOUR_START, tmp)
-            if (hypot(x - tmp[0], y - tmp[1]) <= colourSize + dp(6f)) return it
+        // colour segments: by distance and angle
+        val d = hypot(x - cx, y - cy)
+        if (colours.isNotEmpty() && d >= segIn - dp(4f) && d <= segOut + dp(10f)) {
+            val n = colours.size
+            var deg = Math.toDegrees(atan2((y - cy).toDouble(), (x - cx).toDouble())) + 90.0 + 180.0 / n
+            while (deg < 0) deg += 360.0
+            val i = ((deg % 360.0) / (360.0 / n)).toInt().coerceIn(0, n - 1)
+            return colours[i]
         }
         return null
     }

@@ -1023,7 +1023,9 @@ class MainActivity : ComponentActivity() {
         )
         // colours as the palette shows them (black shows white in dark view)
         val dark = active?.dark == true
-        val colours = COLORS.map { c ->
+        // colour ring in the order of the sketch: clockwise from the top
+        val ringOrder = intArrayOf(0, 2, 4, 5, 3, 6, 1).map { COLORS[it] } // black, red, orange, purple, green, yellow, blue
+        val colours = ringOrder.map { c ->
             PenWheel.Item(PenWheel.COLOUR, c, null, if (dark && !hlMode) Dark.ink(c) else c, drawing && c == pdfView.penColor)
         }
         // size: the same 40 stops as the toolbar slider
