@@ -3669,7 +3669,6 @@ class MainActivity : ComponentActivity() {
             if (fromPicker) keepWriteAccess(uri)
             d.originUri = uri.toString()
             d.saveUri = if (editable && fromPicker) uri.toString() else null
-            if (editable) toast("Opened with editable annotations")
             val resume = lastPageOf(d) // before the new tab starts recording its own page
             if (resume > 0) openedAt[d.id] = android.os.SystemClock.uptimeMillis()
             addDoc(d, true)
