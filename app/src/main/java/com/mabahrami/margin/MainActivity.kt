@@ -364,6 +364,7 @@ class MainActivity : ComponentActivity() {
         v.onFastScrollTap = { x, y -> if (v === pdfView) showFastScrollMenu(v, x, y) }
         v.onZoomLocked = { if (v === pdfView) toast("Zoom is locked · tap the magnifier to unlock") }
         v.onCurrentPage = { i ->
+            v.doc?.let { rememberPage(it, i) }
             if (v === pdfView) {
                 if (pagesPanel.visibility == View.VISIBLE) pagesPanel.setCurrent(i)
                 updatePageBadge(i)
@@ -407,6 +408,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        main.removeCallbacks(saveLastPages)
+        saveLastPages.run() // where you are in each document
         // Save working state (incl. viewport) and wait briefly so nothing is lost if the app is killed.
         dirtyDocs.addAll(docs)
         main.removeCallbacks(flushRunnable)
@@ -603,6 +606,7 @@ class MainActivity : ComponentActivity() {
 
         // ---- canvas with floating tool palette and image bar ----
         val stage = FrameLayout(this)
+        stageView = stage
         // two canvases side by side (the right one and the handle only when two documents are shown)
         val paneRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         paneRow.addView(paneA, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
@@ -2467,6 +2471,86 @@ class MainActivity : ComponentActivity() {
         saveSession()
     }
 
+    // ======================= continue where you left off =======================
+
+    private var stageView: FrameLayout? = null
+
+    /** Page you were last on, per document (by where it came from and by name); the last 200 documents. */
+    private val lastPagePrefs by lazy { getSharedPreferences("last_pages", MODE_PRIVATE) }
+    private val lastPages: LinkedHashMap<String, Int> by lazy {
+        val m = LinkedHashMap<String, Int>(64, 0.75f, true)
+        try {
+            val o = org.json.JSONObject(lastPagePrefs.getString("map", "{}") ?: "{}")
+            for (k in o.keys()) m[k] = o.optInt(k, 0)
+        } catch (e: Exception) {
+        }
+        m
+    }
+    /** Tabs just opened with a "Continue" offer: their page isn't recorded for a few seconds. */
+    private val openedAt = HashMap<String, Long>()
+
+    private fun pageKeys(d: Doc): List<String> = listOfNotNull(d.originUri?.let { "u:$it" }, "n:${d.name}")
+
+    private fun lastPageOf(d: Doc): Int = pageKeys(d).firstNotNullOfOrNull { lastPages[it] } ?: 0
+
+    private val saveLastPages = Runnable {
+        try {
+            lastPagePrefs.edit().putString("map", org.json.JSONObject(lastPages as Map<*, *>).toString()).apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun rememberPage(d: Doc, page: Int) {
+        val t = openedAt[d.id]
+        if (t != null) {
+            if (android.os.SystemClock.uptimeMillis() - t < 4000) return // still offering "Continue"
+            openedAt.remove(d.id)
+        }
+        val keys = pageKeys(d)
+        if (keys.all { lastPages[it] == page }) return
+        for (k in keys) lastPages[k] = page
+        while (lastPages.size > 400) lastPages.remove(lastPages.keys.first()) // 2 keys per document: 200 documents
+        main.removeCallbacks(saveLastPages)
+        main.postDelayed(saveLastPages, 1500)
+    }
+
+    /** "Continue on page N ›" near the bottom for 3 seconds; a tap jumps there. Never blocks the document. */
+    private fun showResumeChip(d: Doc, page: Int) {
+        val stage = stageView ?: return
+        val chip = TextView(this).apply {
+            text = "Continue on page ${page + 1}  ›"
+            textSize = 15f
+            setTextColor(TEXT)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
+                GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(0xF02C2C2E.toInt()); setStroke(1, 0x26FFFFFF) }, null)
+            elevation = dp(10).toFloat()
+            alpha = 0f
+            translationY = dp(12).toFloat()
+            isClickable = true
+        }
+        fun hide() {
+            chip.animate().cancel()
+            chip.animate().alpha(0f).translationY(dp(12).toFloat()).setDuration(180)
+                .withEndAction { (chip.parent as? ViewGroup)?.removeView(chip) }.start()
+        }
+        chip.setOnClickListener {
+            if (docs.contains(d)) {
+                if (active !== d) activate(d)
+                openedAt.remove(d.id)
+                pdfView.post { pdfView.scrollToPage(page) }
+            }
+            hide()
+        }
+        stage.addView(chip, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+        ).apply { setMargins(0, 0, 0, dp(40)) })
+        chip.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        chip.postDelayed({ if (chip.parent != null) hide() }, 3000)
+    }
+
     private fun addDoc(d: Doc, makeActive: Boolean) {
         docs.add(d)
         if (makeActive || active == null) activate(d) else rebuildTabs()
@@ -3577,8 +3661,11 @@ class MainActivity : ComponentActivity() {
             d.originUri = uri.toString()
             d.saveUri = if (editable && fromPicker) uri.toString() else null
             if (editable) toast("Opened with editable annotations")
+            val resume = lastPageOf(d) // before the new tab starts recording its own page
+            if (resume > 0) openedAt[d.id] = android.os.SystemClock.uptimeMillis()
             addDoc(d, true)
             markDirty(d)
+            if (resume in 1 until d.pageCount) showResumeChip(d, resume)
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             Log.e(TAG, "import", t)
