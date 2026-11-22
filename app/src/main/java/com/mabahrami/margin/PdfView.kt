@@ -1612,7 +1612,16 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             if (si >= 0 && si < tops.size) {
                 canvas.save()
                 canvas.translate(pl(si) + mlOf(d, si), tops[si])
-                if (mode == MODE_IMG_MOVE) drawImage(d, canvas, sel)
+                if (mode == MODE_IMG_MOVE) {
+                    // dashed centre guides of the page (only while the image sits on them)
+                    if (guideV || guideH) {
+                        guidePaint.strokeWidth = 1.2f * density / s
+                        guidePaint.pathEffect = DashPathEffect(floatArrayOf(6f * density / s, 4f * density / s), 0f)
+                        if (guideV) canvas.drawLine(sp.w / 2f, 0f, sp.w / 2f, sp.h.toFloat(), guidePaint)
+                        if (guideH) canvas.drawLine(0f, sp.h / 2f, sp.w.toFloat(), sp.h / 2f, guidePaint)
+                    }
+                    drawImage(d, canvas, sel)
+                }
                 drawSelection(canvas, sel, s)
                 canvas.restore()
                 val ox = d.tx + (pl(si) + mlOf(d, si) + sel.x) * s
@@ -2010,9 +2019,25 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             dragAspect = item.w / item.h
         } else {
             mode = MODE_IMG_MOVE
+            imgRawX = item.x
+            imgRawY = item.y
+            guideV = false
+            guideH = false
         }
         parent?.requestDisallowInterceptTouchEvent(true)
         return true
+    }
+
+    // ---- centre guides while moving an image: it snaps to the page's middle, with a dashed line ----
+    /** Where the image would be without snapping (page-local points). */
+    private var imgRawX = 0f
+    private var imgRawY = 0f
+    /** Centred left-right (vertical guide) / top-bottom (horizontal guide) right now. */
+    private var guideV = false
+    private var guideH = false
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0xFFFF2D78.toInt()
     }
 
     private fun dragSelection(d: Doc, e: MotionEvent) {
@@ -2023,8 +2048,21 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val x = e.getX(idx)
         val y = e.getY(idx)
         if (mode == MODE_IMG_MOVE) {
-            item.x += (x - dragLastX) / d.scale
-            item.y += (y - dragLastY) / d.scale
+            imgRawX += (x - dragLastX) / d.scale
+            imgRawY += (y - dragLastY) / d.scale
+            item.x = imgRawX
+            item.y = imgRawY
+            // close to the page's middle: snap there and show the guide
+            val snap = 8f * density / d.scale
+            val wasV = guideV
+            val wasH = guideH
+            val midX = page.w / 2f - item.w / 2f
+            val midY = page.h / 2f - item.h / 2f
+            guideV = abs(imgRawX - midX) < snap
+            guideH = abs(imgRawY - midY) < snap
+            if (guideV) item.x = midX
+            if (guideH) item.y = midY
+            if ((guideV && !wasV) || (guideH && !wasH)) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         } else {
             val i = d.pages.indexOf(page)
             if (i < 0) return
