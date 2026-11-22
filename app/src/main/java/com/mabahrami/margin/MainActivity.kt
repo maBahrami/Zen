@@ -1026,8 +1026,21 @@ class MainActivity : ComponentActivity() {
         val colours = COLORS.map { c ->
             PenWheel.Item(PenWheel.COLOUR, c, null, if (dark && !hlMode) Dark.ink(c) else c, drawing && c == pdfView.penColor)
         }
+        // size: the same 40 stops as the toolbar slider
+        val unit = widthUnit()
+        val lineColour = (if (dark && !hlMode) Dark.ink(pdfView.penColor) else pdfView.penColor) or opaque
+        val stop = ((pdfView.penWidth / unit).roundToInt() - 1).coerceIn(0, 39)
         val w = PenWheel(this)
-        w.setup(loc[0] + x, loc[1] + y, tools, colours)
+        w.setup(loc[0] + x, loc[1] + y, tools, colours, lineColour, 40, stop,
+            label = { st ->
+                val wd = (st + 1) * unit
+                (if (wd % 1f == 0f) "${wd.toInt()}" else String.format(java.util.Locale.US, "%.2f", wd).trimEnd('0').trimEnd('.')) + " pt"
+            },
+            previewPx = { st -> (st + 1) * unit * (active?.scale ?: 1f) })
+        w.onSize = { st ->
+            if (pdfView.eraserMode || pdfView.lassoMode) setTool(hlMode)
+            setWidth(((st + 1) * widthUnit()).coerceIn(widthUnit(), widthUnit() * 40))
+        }
         w.onPick = { item ->
             if (item.kind == PenWheel.TOOL) when (item.value) {
                 0 -> setTool(false)
