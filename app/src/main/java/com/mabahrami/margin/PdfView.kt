@@ -462,6 +462,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     // ---- dark view ----
     /** Dark view of the current document (set at the start of every draw). */
     private var darkView = false
+    /** Dark style the paints were last set for. */
+    private var darkStyleSeen = -1
+
+    /** The dark style changed: drop the pages rendered in the old style and redraw. */
+    fun darkStyleChanged() {
+        cache.evictAll()
+        pending.clear()
+        generation++
+        flipPaint.colorFilter = android.graphics.ColorMatrixColorFilter(Dark.quickMatrix)
+        invalidate()
+    }
     /** Shows a page rendered for the other view, colour-flipped, until its proper version is ready. */
     private val flipPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = android.graphics.ColorMatrixColorFilter(Dark.quickMatrix)
@@ -1447,8 +1458,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         canvas.drawColor(0xFF121214.toInt())
         val d = doc
         val dk = d?.dark == true
-        if (dk != darkView) {
+        if (dk != darkView || darkStyleSeen != Dark.styleIndex) {
             darkView = dk
+            darkStyleSeen = Dark.styleIndex
             shadowPaint.color = if (dk) Dark.PAPER else Color.WHITE
             rulePaint.color = if (dk) Dark.RULE else 0xFFD6D6DA.toInt()
             edgePaint.color = if (dk) Dark.EDGE else 0x33000000

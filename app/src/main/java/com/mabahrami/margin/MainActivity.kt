@@ -281,6 +281,7 @@ class MainActivity : ComponentActivity() {
         paneB = makePane()
         pdfView = paneA
         splitRatio = prefs.getFloat("split_ratio", 0.5f).coerceIn(0.2f, 0.8f)
+        Dark.setStyle(prefs.getInt("dark_style", 0))
         setContentView(buildUi())
         loadTool()
         // "focus" (on/off) is the setting from v1.0: on meant everything hidden
@@ -571,7 +572,8 @@ class MainActivity : ComponentActivity() {
         focusBtn = barIcon(R.drawable.ic_focus, "Focus mode") { setFocusLevel(if (focusLevel == 0) 1 else 2) }
         titleBar.addView(focusBtn, barLp())
         // light / dark view of the open document, at the far right
-        darkBtn = barIcon(R.drawable.ic_dark, "Dark view") { toggleDark() }
+        darkBtn = barIcon(R.drawable.ic_dark, "Dark view (hold for styles)") { toggleDark() }
+        darkBtn.setOnLongClickListener { showDarkStyles(darkBtn); true }
         titleBar.addView(darkBtn, barLp())
         root.addView(titleBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             setMargins(dp(6), dp(4), dp(6), dp(4)) // room around it, so its rounded corners show
@@ -984,6 +986,27 @@ class MainActivity : ComponentActivity() {
         if (pagesPanel.visibility == View.VISIBLE) pagesPanel.refresh()
         updateDarkButton()
         markDirty(d) // remembers the choice in the working state (doesn't mark the file unsaved)
+    }
+
+    /** Holding the dark/light button: the dark view styles (the current one ticked). */
+    private fun showDarkStyles(anchor: View) {
+        val items = Dark.STYLES.mapIndexed { i, st ->
+            GItem((if (i == Dark.styleIndex) "✓  " else "     ") + st.name,
+                header = if (i == 0) "DARK VIEW" else null) { setDarkStyle(i) }
+        }
+        showGenieMenu(anchor, items)
+    }
+
+    /** Picks a dark style (display only, for every tab) and turns dark view on for this tab. */
+    private fun setDarkStyle(i: Int) {
+        Dark.setStyle(i)
+        prefs.edit().putInt("dark_style", i).apply()
+        paneA.darkStyleChanged()
+        paneB.darkStyleChanged()
+        val d = active
+        if (d != null && !d.dark) toggleDark()
+        if (pagesPanel.visibility == View.VISIBLE) pagesPanel.refresh()
+        refreshTool()
     }
 
     /** Whether the palette currently shows dark-view colours. */

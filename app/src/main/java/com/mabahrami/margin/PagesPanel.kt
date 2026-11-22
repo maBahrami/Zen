@@ -308,7 +308,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
         var h = 17
         for (s in p.strokes) h = h * 31 + System.identityHashCode(s)
         for (im in p.images) h = h * 31 + im.state().hashCode()
-        return "${System.identityHashCode(p)}:${p.strokes.size}:${p.images.size}:$h:${d.leftOf(p)}:${d.rightOf(p)}:${d.marginPaperOf(p)}:${d.dark}"
+        return "${System.identityHashCode(p)}:${p.strokes.size}:${p.images.size}:$h:${d.leftOf(p)}:${d.rightOf(p)}:${d.marginPaperOf(p)}:${d.dark}:${Dark.styleIndex}"
     }
 
     private class Snap(
