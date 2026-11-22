@@ -1022,6 +1022,7 @@ class MainActivity : ComponentActivity() {
             PenWheel.Item(PenWheel.TOOL, 3, icon(R.drawable.ic_lasso), TEXT, pdfView.lassoMode),
             PenWheel.Item(PenWheel.ACTION, 0, icon(R.drawable.ic_undo), TEXT, false),
             PenWheel.Item(PenWheel.ACTION, 1, icon(R.drawable.ic_redo), TEXT, false),
+            PenWheel.Item(PenWheel.ACTION, 2, icon(R.drawable.ic_camera), TEXT, false),
         )
         // colours as the palette shows them (black shows white in dark view)
         val dark = active?.dark == true
@@ -1045,10 +1046,21 @@ class MainActivity : ComponentActivity() {
             if (pdfView.eraserMode || pdfView.lassoMode) setTool(hlMode)
             setWidth(((st + 1) * widthUnit()).coerceIn(widthUnit(), widthUnit() * 40))
         }
-        w.canDo = { v -> val d = active; d != null && (if (v == 0) d.canUndo else d.canRedo) }
+        w.canDo = { v ->
+            val d = active
+            d != null && when (v) {
+                0 -> d.canUndo
+                1 -> d.canRedo
+                else -> true
+            }
+        }
         w.onPick = { item ->
             if (item.kind == PenWheel.ACTION) {
-                if (item.value == 0) pdfView.undo() else pdfView.redo()
+                when (item.value) {
+                    0 -> pdfView.undo()
+                    1 -> pdfView.redo()
+                    2 -> active?.let { d -> pendingPlace = null; takePhoto(d) } // same as Insert > Take photo
+                }
             } else if (item.kind == PenWheel.TOOL) when (item.value) {
                 0 -> setTool(false)
                 1 -> setTool(true)

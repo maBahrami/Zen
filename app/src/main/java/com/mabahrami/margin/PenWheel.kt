@@ -42,7 +42,7 @@ class PenWheel(context: Context) : View(context) {
     companion object {
         const val TOOL = 0
         const val COLOUR = 1
-        /** Undo (value 0) on the left and redo (value 1) on the right; they keep the wheel open. */
+        /** Undo (value 0) on the left and redo (value 1) on the right (they keep the wheel open); camera (2) in the centre. */
         const val ACTION = 2
         private const val ACCENT = 0xFF0A84FF.toInt()
         /** The size slider's arc over the top (degrees; 0 = right, clockwise on screen). */
@@ -181,6 +181,11 @@ class PenWheel(context: Context) : View(context) {
     /** Undo on the left side of the circle, redo on the right. */
     private fun actionPos(item: Item, p: Float, out: FloatArray) {
         val turn = (1f - min(1f, p)) * -0.7f
+        if (item.value == 2) { // camera: right in the middle
+            out[0] = cx
+            out[1] = cy
+            return
+        }
         val a = (if (item.value == 0) PI else 0.0).toFloat() + turn
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
@@ -440,7 +445,7 @@ class PenWheel(context: Context) : View(context) {
                 }
                 val h = hit(e.x, e.y)
                 pressed = null
-                if (h != null && h.kind == ACTION) {
+                if (h != null && h.kind == ACTION && h.value != 2) {
                     // undo / redo: done, and the wheel stays open for more
                     if (canDo(h.value)) onPick?.invoke(h)
                     invalidate()
