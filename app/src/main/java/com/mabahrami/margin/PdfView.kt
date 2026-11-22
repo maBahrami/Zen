@@ -1378,6 +1378,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (penBusy) return
         val a = d.undo() ?: return
         afterAction(d, a)
+        revealAction(d, a, undone = true)
     }
 
     fun redo() {
@@ -1385,6 +1386,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (penBusy) return
         val a = d.redo() ?: return
         afterAction(d, a)
+        revealAction(d, a, undone = false)
     }
 
     private fun afterAction(d: Doc, a: Action) {
@@ -1394,8 +1396,53 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val sp2 = selPage
         if (sp2 != null && si != null && (!d.pages.contains(sp2) || !sp2.images.contains(si))) clearSelection()
         else if (si != null) onSelection?.invoke(si)
-        if (a is Action.Margins || a is Action.PageMargins || a is Action.InsertPages || a is Action.DeletePage || a is Action.MovePage) afterLayoutChange(d) else invalidate()
+        if (changesLayout(a)) afterLayoutChange(d) else invalidate()
         onChange?.invoke(d)
+    }
+
+    /** Pages added, removed, moved or re-margined (also inside a batch, e.g. several pages deleted at once). */
+    private fun changesLayout(a: Action): Boolean = when (a) {
+        is Action.Margins, is Action.PageMargins, is Action.InsertPages, is Action.DeletePage, is Action.MovePage -> true
+        is Action.Batch -> a.actions.any { changesLayout(it) }
+        else -> false
+    }
+
+    /** Where an undo / redo happened: the page and the part of it (page-local y range; NaN = whole page). */
+    private class Spot(val page: Page, val y0: Float = Float.NaN, val y1: Float = Float.NaN)
+
+    private fun spotOf(d: Doc, a: Action, undone: Boolean): Spot? = when (a) {
+        is Action.Add -> Spot(a.page, a.stroke.minY, a.stroke.maxY)
+        is Action.ReplaceStroke -> (if (undone) a.old else a.new).let { Spot(a.page, it.minY, it.maxY) }
+        is Action.Erase -> a.items.firstOrNull()?.let { Spot(it.page, it.stroke.minY, it.stroke.maxY) }
+        is Action.AddImage -> Spot(a.page, a.item.y, a.item.y + a.item.h)
+        is Action.RemoveImage -> Spot(a.page, a.item.y, a.item.y + a.item.h)
+        is Action.ImageChange -> d.pages.firstOrNull { it.images.contains(a.item) }?.let { Spot(it, a.item.y, a.item.y + a.item.h) }
+        is Action.MoveImage -> (if (a.to.images.contains(a.item)) a.to else a.from).let { Spot(it, a.item.y, a.item.y + a.item.h) }
+        is Action.PageMargins -> Spot(a.page)
+        is Action.MovePage -> Spot(a.page)
+        is Action.InsertPages -> d.pages.getOrNull(a.index.coerceIn(0, max(0, d.pageCount - 1)))?.let { Spot(it) }
+        is Action.DeletePage -> d.pages.getOrNull(a.index.coerceIn(0, max(0, d.pageCount - 1)))?.let { Spot(it) }
+        is Action.Batch -> a.actions.asSequence().mapNotNull { spotOf(d, it, undone) }.firstOrNull()
+        is Action.Margins -> null
+    }
+
+    /** Undo / redo: if what changed isn't on screen, scroll so it's in the middle. */
+    private fun revealAction(d: Doc, a: Action, undone: Boolean) {
+        val spot = try { spotOf(d, a, undone) } catch (t: Throwable) { null } ?: return
+        if (tops.size != d.pageCount) relayout()
+        val i = d.pages.indexOf(spot.page)
+        if (i < 0 || d.scale <= 0f || height <= 0) return
+        val y0 = if (spot.y0.isFinite()) spot.y0 else 0f
+        val y1 = if (spot.y1.isFinite()) spot.y1 else spot.page.h.toFloat()
+        val s = d.scale
+        val sy0 = d.ty + (tops[i] + y0) * s
+        val sy1 = d.ty + (tops[i] + y1) * s
+        if (sy1 >= topPx && sy0 <= height - edgePx) return // already (at least partly) on screen
+        scroller.forceFinished(true)
+        flinging = false
+        d.ty = height / 2f - (tops[i] + (y0 + y1) / 2f) * s
+        clamp(d)
+        invalidate()
     }
 
     fun trimCache() {
