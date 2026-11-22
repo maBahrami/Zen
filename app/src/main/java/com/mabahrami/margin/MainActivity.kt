@@ -210,8 +210,25 @@ class MainActivity : ComponentActivity() {
             if (uri != null) addFavoriteFolder(uri)
         }
 
+    /** The save button in the top bar (where the folder menu for "Save as new file" opens). */
+    private var saveBtnView: View? = null
+
+    /** "Save as new file": the system save window, starting in a chosen folder if there is one. */
+    private class CreatePdfAt : androidx.activity.result.contract.ActivityResultContract<Pair<String, Uri?>, Uri?>() {
+        override fun createIntent(context: android.content.Context, input: Pair<String, Uri?>): Intent =
+            Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_TITLE, input.first)
+                input.second?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+            }
+
+        override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
+            if (resultCode == android.app.Activity.RESULT_OK) intent?.data else null
+    }
+
     private val saveLauncher =
-        registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        registerForActivityResult(CreatePdfAt()) { uri ->
             val d = docs.firstOrNull { it.id == pendingSaveId }
             pendingSaveId = null
             if (uri != null && d != null) {
@@ -567,6 +584,7 @@ class MainActivity : ComponentActivity() {
         titleBar.addView(insertBtn, barLp())
         lateinit var saveBtn: ImageView
         saveBtn = barIcon(R.drawable.ic_save, "Save or export") { showSaveMenu(saveBtn) }
+        saveBtnView = saveBtn
         // file & view (a wider gap separates the groups)
         titleBar.addView(saveBtn, barLp(10))
         titleBar.addView(barIcon(R.drawable.ic_share, "Share") { active?.let { share(it) } }, barLp())
@@ -3948,15 +3966,43 @@ class MainActivity : ComponentActivity() {
                     renameTo = if (n != current) "$n.pdf" else null)
             }
         }
-        b.setNeutralButton("Save as new file…") { _, _ -> pickSaveLocation(d, chosenName()) }
+        b.setNeutralButton("Save as new file…") { _, _ -> chooseSaveFolder(d, chosenName()) }
         b.setNegativeButton("Cancel", null)
         compactShow(b.create(), 380)
     }
 
-    private fun pickSaveLocation(d: Doc, base: String = baseName(d.name)) {
+    /**
+     * "Save as new file": your favourite folders first (the save window then opens right there),
+     * or any other folder. With no favourites it goes straight to the save window.
+     */
+    private fun chooseSaveFolder(d: Doc, base: String) {
+        val favs = favoriteFolders()
+        if (favs.isEmpty()) {
+            pickSaveLocation(d, base)
+            return
+        }
+        val items = ArrayList<GItem>()
+        for ((k, f) in favs.withIndex()) {
+            items.add(GItem(f.second, icon = R.drawable.ic_folder_star, header = if (k == 0) "SAVE IN" else null) {
+                if (docs.contains(d)) pickSaveLocation(d, base, folderStart(f.first))
+            })
+        }
+        items.add(GItem("Other folder…", icon = R.drawable.ic_open) { if (docs.contains(d)) pickSaveLocation(d, base) })
+        showGenieMenu(saveBtnView ?: titleBar, items)
+    }
+
+    /** The document uri a picker can start in, for a favourite folder's tree uri (null if it can't). */
+    private fun folderStart(treeUri: String): Uri? = try {
+        val tree = Uri.parse(treeUri)
+        DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun pickSaveLocation(d: Doc, base: String = baseName(d.name), start: Uri? = null) {
         pendingSaveId = d.id
         try {
-            saveLauncher.launch("$base.pdf")
+            saveLauncher.launch("$base.pdf" to start)
         } catch (e: Exception) {
             pendingSaveId = null
             toast("No app available to save files")
