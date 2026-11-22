@@ -389,7 +389,14 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
                 }
             }
             val bp = Paint(Paint.FILTER_BITMAP_FLAG)
+            fun pic(f: File, st: ImgState) {
+                val ib = Pics.decodeForScreen(f, 400) ?: return
+                val src = Rect((st.cl * ib.width).toInt(), (st.ct * ib.height).toInt(),
+                    (st.cr * ib.width).toInt(), (st.cb * ib.height).toInt())
+                c.drawBitmap(ib, src, RectF(st.x, st.y, st.x + st.w, st.y + st.h), bp)
+            }
             for ((f, st) in s.images) {
+                if (st.front) continue
                 val ib = Pics.decodeForScreen(f, 400) ?: continue
                 val src = Rect((st.cl * ib.width).toInt(), (st.ct * ib.height).toInt(),
                     (st.cr * ib.width).toInt(), (st.cb * ib.height).toInt())
@@ -421,6 +428,7 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
                 ink.pathEffect = linePattern(st.style, st.width)?.let { DashPathEffect(it, 0f) }
                 Pressure.draw(c, st, ink, inkFill)
             }
+            for ((f, st) in s.images) if (st.front) pic(f, st)
             if (s.dark) {
                 // photos keep their colours, like on the page itself
                 val keep = s.images.map { (_, st) ->

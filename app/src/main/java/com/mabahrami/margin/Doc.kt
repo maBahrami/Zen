@@ -200,6 +200,8 @@ data class ImgState(
     val x: Float, val y: Float, val w: Float, val h: Float,
     val cl: Float, val ct: Float, val cr: Float, val cb: Float,
     val locked: Boolean,
+    /** In front of the writing (true) or behind it (false, the default). */
+    val front: Boolean = false,
 )
 
 /**
@@ -217,13 +219,16 @@ class ImageItem(val file: String, val imgW: Int, val imgH: Int) {
     var cr = 1f
     var cb = 1f
     var locked = false
+    /** Drawn in front of the writing instead of behind it. */
+    var front = false
 
-    fun state() = ImgState(x, y, w, h, cl, ct, cr, cb, locked)
+    fun state() = ImgState(x, y, w, h, cl, ct, cr, cb, locked, front)
 
     fun set(s: ImgState) {
         x = s.x; y = s.y; w = s.w; h = s.h
         cl = s.cl; ct = s.ct; cr = s.cr; cb = s.cb
         locked = s.locked
+        front = s.front
     }
 
     fun contains(px: Float, py: Float) = px >= x && px <= x + w && py >= y && py <= y + h

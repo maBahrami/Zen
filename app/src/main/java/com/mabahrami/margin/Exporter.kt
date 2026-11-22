@@ -48,6 +48,7 @@ object Exporter {
         val path: File,
         val x: Float, val y: Float, val w: Float, val h: Float,
         val cl: Float, val ct: Float, val cr: Float, val cb: Float,
+        val front: Boolean = false,
     )
 
     class PageSnap(
@@ -74,7 +75,7 @@ object Exporter {
     fun snapshot(d: Doc, withEditData: Boolean): Job {
         val pages = d.pages.map { p ->
             PageSnap(p.file, p.src, p.w, p.h, ArrayList(p.strokes), p.images.map {
-                ImgSnap(File(d.dir, it.file), it.x, it.y, it.w, it.h, it.cl, it.ct, it.cr, it.cb)
+                ImgSnap(File(d.dir, it.file), it.x, it.y, it.w, it.h, it.cl, it.ct, it.cr, it.cb, it.front)
             }, if (p.isBlank) p.paper else PAPER_BLANK, d.marginPaperOf(p), d.leftOf(p), d.rightOf(p))
         }
         val files = ArrayList<Pair<String, File>>()
@@ -327,7 +328,13 @@ object Exporter {
 
     /** Draws images then strokes, in page-local "visual" coordinates (y down). */
     private fun drawOverlay(doc: PDDocument, cs: PDPageContentStream, p: PageSnap, images: HashMap<File, PDImageXObject?>) {
-        for (im in p.images) {
+        drawImages(doc, cs, p.images.filter { !it.front }, images)
+        drawWriting(cs, p)
+        drawImages(doc, cs, p.images.filter { it.front }, images) // brought to the front: over the writing
+    }
+
+    private fun drawImages(doc: PDDocument, cs: PDPageContentStream, list: List<ImgSnap>, images: HashMap<File, PDImageXObject?>) {
+        for (im in list) {
             val xo = images.getOrPut(im.path) {
                 try {
                     FileInputStream(im.path).use { JPEGFactory.createFromStream(doc, it) }
@@ -348,6 +355,9 @@ object Exporter {
             cs.drawImage(xo, Matrix(fullW, 0f, 0f, -fullH, fx, fy + fullH))
             cs.restoreGraphicsState()
         }
+    }
+
+    private fun drawWriting(cs: PDPageContentStream, p: PageSnap) {
         if (p.strokes.isNotEmpty()) {
             cs.setLineCapStyle(1)
             cs.setLineJoinStyle(1)

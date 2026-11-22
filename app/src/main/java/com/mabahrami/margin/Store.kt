@@ -146,6 +146,7 @@ object Store {
         val file: String, val iw: Int, val ih: Int,
         val x: Float, val y: Float, val w: Float, val h: Float,
         val cl: Float, val ct: Float, val cr: Float, val cb: Float, val locked: Boolean,
+        val front: Boolean = false,
     )
 
     /** A page as state.json stores it. Strokes never change once made, so they're shared, not copied. */
@@ -184,7 +185,7 @@ object Store {
                 p.file, p.src, p.w, p.h, p.paper, p.mL, p.mR, p.mPaper,
                 ArrayList(p.strokes),
                 p.images.map { im ->
-                    ImgSnap(im.file, im.imgW, im.imgH, im.x, im.y, im.w, im.h, im.cl, im.ct, im.cr, im.cb, im.locked)
+                    ImgSnap(im.file, im.imgW, im.imgH, im.x, im.y, im.w, im.h, im.cl, im.ct, im.cr, im.cb, im.locked, im.front)
                 },
             )
         },
@@ -236,7 +237,9 @@ object Store {
                 sb.append(",\"c\":[")
                 crop(sb, im.cl); sb.append(','); crop(sb, im.ct); sb.append(',')
                 crop(sb, im.cr); sb.append(','); crop(sb, im.cb)
-                sb.append("],\"lock\":").append(im.locked).append('}')
+                sb.append("],\"lock\":").append(im.locked)
+                if (im.front) sb.append(",\"front\":true")
+                sb.append('}')
             }
             sb.append("]}")
         }
@@ -285,6 +288,7 @@ object Store {
                 }
             }
             im.locked = o.optBoolean("lock", false)
+            im.front = o.optBoolean("front", false)
             into.add(im)
         }
     }

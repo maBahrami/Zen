@@ -123,6 +123,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var insertBtn: ImageView
     private lateinit var selBar: LinearLayout
     private lateinit var lockBtn: TextView
+    private lateinit var layerBtn: TextView
     private lateinit var pressAnchor: View
     private lateinit var pagesPanel: PagesPanel
     private lateinit var pageBadge: TextView
@@ -758,6 +759,10 @@ class MainActivity : ComponentActivity() {
         selBar.addView(lockBtn)
         selBar.addView(sep(), LinearLayout.LayoutParams(1, dp(22)))
         selBar.addView(menuItem("Crop") { cropSelected() })
+        selBar.addView(sep(), LinearLayout.LayoutParams(1, dp(22)))
+        // in front of the writing or behind it
+        layerBtn = menuItem("To front") { pdfView.changeSelected { it.front = !it.front }; pdfView.selectedImage?.let { updateSelBar(it) } }
+        selBar.addView(layerBtn)
         selBar.addView(sep(), LinearLayout.LayoutParams(1, dp(22)))
         selBar.addView(menuItem("Copy") { copySelected(cut = false) })
         selBar.addView(sep(), LinearLayout.LayoutParams(1, dp(22)))
@@ -4479,6 +4484,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         lockBtn.text = if (item.locked) "Unlock" else "Lock"
+        layerBtn.text = if (item.front) "To back" else "To front"
         popIn(selBar)
     }
 

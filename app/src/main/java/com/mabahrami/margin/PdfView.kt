@@ -1762,6 +1762,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
             val hideSel = lassoDragging && page === lassoPage
             for (im in page.images) {
+                if (im.front) continue // drawn after the writing
                 if (mode == MODE_IMG_MOVE && im === selItem) continue
                 if (hideSel && isSelected(im)) continue
                 drawImage(d, canvas, im)
@@ -1812,6 +1813,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 if (hideSel && isSelected(st)) continue
                 applyStyle(st.color, st.width, st.style)
                 Pressure.draw(canvas, st, inkPaint, inkFill)
+            }
+            // images brought to the front cover the writing
+            for (im in page.images) {
+                if (!im.front) continue
+                if (mode == MODE_IMG_MOVE && im === selItem) continue
+                if (hideSel && isSelected(im)) continue
+                drawImage(d, canvas, im)
             }
             if (liveHere && !liveHighlighter) {
                 applyStyle(liveColor, liveWidth, liveStyle)
