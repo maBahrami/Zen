@@ -302,6 +302,22 @@ fun Stroke.transformed(dx: Float, dy: Float, s: Float, ax: Float, ay: Float): St
     return Stroke(color, width * s, p, style, highlighter, poly, pw)
 }
 
+/**
+ * A stroke stretched by [sx] / [sy] around (ax, ay) and moved by (dx, dy). Stretching one way only keeps
+ * the line width (a widened box keeps its line thickness); an even scale scales it like [transformed].
+ */
+fun Stroke.stretched(dx: Float, dy: Float, sx: Float, sy: Float, ax: Float, ay: Float): Stroke {
+    if (sx == sy) return transformed(dx, dy, sx, ax, ay)
+    val p = FloatArray(pts.size)
+    var i = 0
+    while (i + 1 < pts.size) {
+        p[i] = ax + (pts[i] - ax) * sx + dx
+        p[i + 1] = ay + (pts[i + 1] - ay) * sy + dy
+        i += 2
+    }
+    return Stroke(color, width, p, style, highlighter, poly, pw)
+}
+
 fun Stroke.recoloured(c: Int): Stroke = Stroke(c, width, pts, style, highlighter, poly, pw)
 
 /** A page's own margins, remembered so "all pages" can be undone. */

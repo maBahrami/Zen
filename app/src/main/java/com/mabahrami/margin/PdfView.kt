@@ -390,6 +390,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private var selDx = 0f
     private var selDy = 0f
     private var selScale = 1f
+    /** Stretch while dragging a side handle: x (left/right side) or y (top/bottom side). */
+    private var selSx = 1f
+    private var selSy = 1f
+    /** 0 = corner (even scale), 1 = side handle (stretch x), 2 = top/bottom handle (stretch y). */
+    private var selAxis = 0
+    private var selStartLen = 1f
     private var selAx = 0f
     private var selAy = 0f
     private var selStartDist = 1f
@@ -527,6 +533,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         color = 0xFFFF9F0A.toInt()
     }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0A84FF.toInt() }
+    private val barRect = RectF()
     private val handleRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = Color.WHITE
@@ -913,9 +920,24 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 corner = k; break
             }
         }
+        // the middle of each side: stretch one way (4 = left, 5 = right, 6 = top, 7 = bottom)
+        var side = -1
+        if (corner < 0) {
+            val cx = selBox.centerX()
+            val cy = selBox.centerY()
+            val tall = selBox.height() > 2 * g
+            val wide = selBox.width() > 2 * g
+            side = when {
+                tall && abs(lx - selBox.left) < g && abs(ly - cy) < g -> 4
+                tall && abs(lx - selBox.right) < g && abs(ly - cy) < g -> 5
+                wide && abs(ly - selBox.top) < g && abs(lx - cx) < g -> 6
+                wide && abs(ly - selBox.bottom) < g && abs(lx - cx) < g -> 7
+                else -> -1
+            }
+        }
         val inside = lx >= selBox.left - g / 2 && lx <= selBox.right + g / 2 && ly >= selBox.top - g / 2 && ly <= selBox.bottom + g / 2
-        if (corner < 0 && !inside) return false
-        selDx = 0f; selDy = 0f; selScale = 1f
+        if (corner < 0 && side < 0 && !inside) return false
+        selDx = 0f; selDy = 0f; selScale = 1f; selSx = 1f; selSy = 1f
         selPointer = e.getPointerId(idx)
         selLastX = e.getX(idx); selLastY = e.getY(idx)
         if (corner >= 0) {
@@ -924,6 +946,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             val cx = if (corner == 0 || corner == 2) selBox.left else selBox.right
             val cy = if (corner < 2) selBox.top else selBox.bottom
             selStartDist = max(1f, hypot(cx - selAx, cy - selAy))
+            selAxis = 0
+            mode = MODE_SEL_SCALE
+        } else if (side >= 0) {
+            // anchored at the opposite side
+            selAxis = if (side < 6) 1 else 2
+            selAx = if (side == 4) selBox.right else selBox.left
+            selAy = if (side == 6) selBox.bottom else selBox.top
+            selStartLen = max(1f, if (selAxis == 1) selBox.width() else selBox.height())
             mode = MODE_SEL_SCALE
         } else {
             selAx = selBox.left; selAy = selBox.top
@@ -946,7 +976,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             if (i < 0) return
             val lx = localX(d, i, x)
             val ly = localY(d, i, y)
-            selScale = (hypot(lx - selAx, ly - selAy) / selStartDist).coerceIn(0.1f, 10f)
+            when (selAxis) {
+                1 -> { selSx = (abs(lx - selAx) / selStartLen).coerceIn(0.05f, 20f); selSy = 1f }
+                2 -> { selSy = (abs(ly - selAy) / selStartLen).coerceIn(0.05f, 20f); selSx = 1f }
+                else -> {
+                    selScale = (hypot(lx - selAx, ly - selAy) / selStartDist).coerceIn(0.1f, 10f)
+                    selSx = selScale; selSy = selScale
+                }
+            }
         }
         selLastX = x; selLastY = y
         invalidate()
@@ -955,7 +992,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     /** Commits a move/scale as one undo step (strokes replaced by moved copies, images changed). */
     private fun finishLassoDrag(d: Doc) {
         val page = lassoPage
-        val moved = selDx != 0f || selDy != 0f || selScale != 1f
+        val moved = selDx != 0f || selDy != 0f || selSx != 1f || selSy != 1f
         mode = MODE_NONE
         if (page == null || !moved) {
             invalidate(); return
@@ -963,7 +1000,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val actions = ArrayList<Action>()
         val newStrokes = ArrayList<Stroke>()
         for (st in selStrokes) {
-            val n = st.transformed(selDx, selDy, selScale, selAx, selAy)
+            val n = st.stretched(selDx, selDy, selSx, selSy, selAx, selAy)
             val k = page.strokes.indexOf(st)
             if (k >= 0) {
                 page.strokes[k] = n
@@ -973,14 +1010,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         for (im in selImages) {
             val before = im.state()
-            im.x = selAx + (im.x - selAx) * selScale + selDx
-            im.y = selAy + (im.y - selAy) * selScale + selDy
-            im.w *= selScale
-            im.h *= selScale
+            im.x = selAx + (im.x - selAx) * selSx + selDx
+            im.y = selAy + (im.y - selAy) * selSy + selDy
+            im.w *= selSx
+            im.h *= selSy
             actions.add(Action.ImageChange(im, before, im.state()))
         }
         selStrokes = newStrokes
-        selDx = 0f; selDy = 0f; selScale = 1f
+        selDx = 0f; selDy = 0f; selScale = 1f; selSx = 1f; selSy = 1f
         recomputeSelBox()
         if (actions.isNotEmpty()) {
             d.push(Action.Batch(actions))
@@ -1717,7 +1754,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         if (hasLasso) {
             selMatrix.reset()
-            selMatrix.postScale(selScale, selScale, selAx, selAy)
+            selMatrix.postScale(selSx, selSy, selAx, selAy)
             selMatrix.postTranslate(selDx, selDy)
             if (lassoDragging) {
                 // the selection moves as one piece while dragging
@@ -1746,6 +1783,20 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 val hy = if (k < 2) tmpRect.top else tmpRect.bottom
                 canvas.drawCircle(hx, hy, r, handlePaint)
                 canvas.drawCircle(hx, hy, r, handleRing)
+            }
+            // side handles (stretch one way): small bars in the middle of each side, when there's room
+            val g2 = 2 * grabPx / s
+            val bl = r * 1.3f
+            val bt = r * 0.55f
+            if (tmpRect.height() > g2) for (x0 in floatArrayOf(tmpRect.left, tmpRect.right)) {
+                barRect.set(x0 - bt, tmpRect.centerY() - bl, x0 + bt, tmpRect.centerY() + bl)
+                canvas.drawRoundRect(barRect, bt, bt, handlePaint)
+                canvas.drawRoundRect(barRect, bt, bt, handleRing)
+            }
+            if (tmpRect.width() > g2) for (y0 in floatArrayOf(tmpRect.top, tmpRect.bottom)) {
+                barRect.set(tmpRect.centerX() - bl, y0 - bt, tmpRect.centerX() + bl, y0 + bt)
+                canvas.drawRoundRect(barRect, bt, bt, handlePaint)
+                canvas.drawRoundRect(barRect, bt, bt, handleRing)
             }
             val ox = d.tx + (pl(i) + mlOf(d, i)) * s
             val oy = d.ty + tops[i] * s
