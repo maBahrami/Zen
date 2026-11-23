@@ -121,8 +121,28 @@ object Pressure {
         val body = FloatArray((2 * m + 2 * (capSeg - 1)) * 2)
         var k = 0
         fun put(x: Float, y: Float) { body[k++] = x; body[k++] = y }
-        // left side, forward (normal = (-ty, tx))
-        for (i in 0 until m) put(px[i] - ty[i] * hw[i], py[i] + tx[i] * hw[i])
+        // Each side's edge never runs backwards: on the inside of a tight turn the offset edge would loop
+        // back on itself and poke out little spikes, so those points are skipped (the edge cuts across).
+        fun side(sign: Float): FloatArray {
+            val out = FloatArray(m * 2)
+            var c = 0
+            for (i in 0 until m) {
+                val x = px[i] - sign * ty[i] * hw[i]
+                val y = py[i] + sign * tx[i] * hw[i]
+                if (c >= 2) {
+                    val dx = x - out[c - 2]
+                    val dy = y - out[c - 1]
+                    if (dx * tx[i] + dy * ty[i] <= 0f) continue // would go backwards
+                }
+                out[c++] = x; out[c++] = y
+            }
+            return out.copyOf(c)
+        }
+        val left = side(1f)   // normal = (-ty, tx)
+        val right = side(-1f)
+        // left side, forward
+        var q = 0
+        while (q + 1 < left.size) { put(left[q], left[q + 1]); q += 2 }
         // round end: from left to right around the tip
         run {
             val i = m - 1
@@ -133,7 +153,8 @@ object Pressure {
             }
         }
         // right side, backward
-        for (i in m - 1 downTo 0) put(px[i] + ty[i] * hw[i], py[i] - tx[i] * hw[i])
+        q = right.size - 2
+        while (q >= 0) { put(right[q], right[q + 1]); q -= 2 }
         // round start: from right back to left around the start
         for (c in 1 until capSeg) {
             val a = PI.toFloat() * c / capSeg
