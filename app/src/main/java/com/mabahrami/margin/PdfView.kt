@@ -1514,11 +1514,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             return
         }
         val n = d.pageCount
-        var maxW = 0f
         var maxOrig = 0f
         var allMargins = n > 0
         for (i in 0 until n) {
-            maxW = max(maxW, pageFullW(d, i))
             maxOrig = max(maxOrig, d.pages[i].w.toFloat())
             if (pageFullW(d, i) <= d.pages[i].w + 0.01f) allMargins = false
         }
@@ -1528,14 +1526,27 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         var y = 0f
         for (i in 0 until n) {
             // as if there were no margins: the original pages are centred under each other
-            l[i] = if (floatLayout) (maxOrig - d.pages[i].w) / 2f - mlOf(d, i) else (maxW - pageFullW(d, i)) / 2f
+            // (also when every page has margins, of any size and on either side)
+            l[i] = (maxOrig - d.pages[i].w) / 2f - mlOf(d, i)
             t[i] = y
             y += d.pages[i].h + GAP
+        }
+        var cw = maxOrig
+        if (!floatLayout && n > 0) {
+            // every page has margins: they all move together, so the content spans every page's margins
+            var minL = Float.MAX_VALUE
+            var maxR = -Float.MAX_VALUE
+            for (i in 0 until n) {
+                minL = min(minL, l[i])
+                maxR = max(maxR, l[i] + pageFullW(d, i))
+            }
+            for (i in 0 until n) l[i] -= minL
+            cw = maxR - minL
         }
         tops = t; lefts = l
         shifts = FloatArray(n)
         slidePage = -1
-        contentW = if (floatLayout) maxOrig else maxW
+        contentW = cw
         contentH = max(0f, y - GAP)
     }
 
