@@ -1520,7 +1520,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             maxOrig = max(maxOrig, d.pages[i].w.toFloat())
             if (pageFullW(d, i) <= d.pages[i].w + 0.01f) allMargins = false
         }
-        floatLayout = !allMargins
+        // margin pages always slide on their own (also when every page has margins); the rest stays put
+        floatLayout = true
         val t = FloatArray(n)
         val l = FloatArray(n)
         var y = 0f
