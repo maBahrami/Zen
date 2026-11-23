@@ -84,7 +84,9 @@ object Pressure {
         val cTotal = cl[n - 1]
         fun widthAt(d: Float): Float {
             if (cTotal <= 1e-6f) return w * pw[0]
-            val target = d / len * cTotal
+            // by distance along the stroke (not as a share of its length): while writing, the part
+            // already drawn keeps exactly the same widths as the stroke grows, so it doesn't shimmer
+            val target = d.coerceIn(0f, cTotal)
             var lo = 0
             var hi = n - 1
             while (hi - lo > 1) {
@@ -95,15 +97,19 @@ object Pressure {
             val t = if (seg > 1e-6f) ((target - cl[lo]) / seg).coerceIn(0f, 1f) else 0f
             return w * (pw[lo] + (pw[hi] - pw[lo]) * t)
         }
-        val step = (w * 0.3f).coerceIn(0.15f, 0.6f)
-        val m = min(6000, (len / step).toInt() + 1).coerceAtLeast(2)
+        // fine steps (smooth edges even zoomed in), at fixed distances from the start: earlier samples
+        // never move as the stroke grows; only the last one (the tip) follows the pen
+        var step = (w * 0.15f).coerceIn(0.08f, 0.25f)
+        if (len / step > 5998f) step = len / 5998f
+        val whole = (len / step).toInt()
+        val m = (whole + 2).coerceAtLeast(2)
         val px = FloatArray(m); val py = FloatArray(m)
         val tx = FloatArray(m); val ty = FloatArray(m)
         val hw = FloatArray(m)
         val pos = FloatArray(2)
         val tan = FloatArray(2)
         for (i in 0 until m) {
-            val d = len * i / (m - 1)
+            val d = if (i == m - 1) len else min(len, i * step)
             pm.getPosTan(d, pos, tan)
             var a = tan[0]; var b = tan[1]
             val tl = hypot(a, b)
@@ -111,7 +117,7 @@ object Pressure {
             px[i] = pos[0]; py[i] = pos[1]; tx[i] = a; ty[i] = b
             hw[i] = widthAt(d) / 2f
         }
-        val capSeg = 8
+        val capSeg = 14
         val body = FloatArray((2 * m + 2 * (capSeg - 1)) * 2)
         var k = 0
         fun put(x: Float, y: Float) { body[k++] = x; body[k++] = y }
@@ -139,11 +145,14 @@ object Pressure {
         polys.add(body2)
         val ccw = signedArea(body2) > 0f
         // dots at sharp turns (the inner edge folds there)
-        var lastDot = -10
-        for (i in 1 until m) {
-            val turn = abs(angle(tx[i - 1], ty[i - 1], tx[i], ty[i]))
-            if (turn > 0.35f && i - lastDot > 1) {
-                polys.add(circle(px[i], py[i], hw[i], ccw))
+        // (the turn is measured over about half a line width, so fine sampling doesn't hide a corner)
+        val win = max(1, (w * 0.5f / step).toInt())
+        var lastDot = -10 * win
+        for (i in win until m) {
+            val turn = abs(angle(tx[i - win], ty[i - win], tx[i], ty[i]))
+            if (turn > 0.35f && i - lastDot > win) {
+                val c = i - win / 2 // the middle of the turn
+                polys.add(circle(px[c], py[c], hw[c], ccw))
                 lastDot = i
             }
         }
@@ -164,7 +173,7 @@ object Pressure {
     }
 
     private fun circle(cx: Float, cy: Float, r: Float, ccw: Boolean): FloatArray {
-        val seg = 14
+        val seg = 24
         val out = FloatArray(seg * 2)
         for (i in 0 until seg) {
             val a = 2 * PI.toFloat() * i / seg * (if (ccw) 1f else -1f)
