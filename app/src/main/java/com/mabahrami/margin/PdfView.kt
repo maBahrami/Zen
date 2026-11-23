@@ -1586,6 +1586,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val r0 = lefts[i] + pageFullW(d, i)
         out[0] = min(0f, viewR - r0) // slide left until the right margin's edge is in view
         out[1] = max(0f, viewL - l0) // slide right until the left margin's edge is in view
+        // and further, until the page's outer edge lines up with the page next to it (below, or above for the last)
+        val j = if (i + 1 < d.pageCount) i + 1 else i - 1
+        if (j in 0 until d.pageCount) {
+            val nl = lefts[j] + mlOf(d, j)            // the neighbour's own page, without its margins
+            val nr = nl + d.pages[j].w
+            out[1] = max(out[1], nl - l0)
+            out[0] = min(out[0], nr - r0)
+        }
     }
 
     /** Slides page [i] by [dxPx] screen pixels as far as it can; returns what's left over (pixels). */
