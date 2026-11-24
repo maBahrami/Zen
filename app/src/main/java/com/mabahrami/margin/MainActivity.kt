@@ -4179,12 +4179,6 @@ class MainActivity : ComponentActivity() {
         segAll.setOnClickListener { switchScope(false) }
         segOne.setOnClickListener { switchScope(true) }
         styleSegment()
-        box.addView(TextView(this).apply {
-            text = "Margin paper"
-            textSize = 13f
-            setTextColor(TEXT_DIM)
-            setPadding(0, dp(2), 0, dp(6))
-        })
         box.addView(paperBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             bottomMargin = dp(8)
         })
