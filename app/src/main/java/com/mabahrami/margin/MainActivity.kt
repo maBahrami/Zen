@@ -952,10 +952,10 @@ class MainActivity : ComponentActivity() {
         widthLabel.text = if (w % 1f == 0f) "${w.toInt()}" else String.format("%.2f", w).trimEnd('0').trimEnd('.')
     }
 
-    // pen: 0.25 .. 10 pt in 0.25 steps (40 stops); highlighter: 5 .. 70 pt in 1 pt steps (66 stops)
-    private fun widthMin() = if (hlMode) 5f else 0.25f
+    // pen: 0.25 .. 10 pt in 0.25 steps (40 stops); highlighter: 3 .. 50 pt in 1 pt steps (48 stops)
+    private fun widthMin() = if (hlMode) 3f else 0.25f
     private fun widthStep() = if (hlMode) 1f else 0.25f
-    private fun widthStops() = if (hlMode) 66 else 40
+    private fun widthStops() = if (hlMode) 48 else 40
     private fun widthAt(stop: Int) = widthMin() + stop.coerceIn(0, widthStops() - 1) * widthStep()
     private fun widthMax() = widthAt(widthStops() - 1)
     private fun stopOf(w: Float) = ((w - widthMin()) / widthStep()).roundToInt().coerceIn(0, widthStops() - 1)
