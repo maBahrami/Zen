@@ -750,6 +750,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private var selPage: Page? = null
     private var selItem: ImageItem? = null
     private var dragBefore: ImgState? = null
+    private var dragStartX = 0f
+    private var dragStartY = 0f
     private var dragPointerId = -1
     private var dragLastX = 0f
     private var dragLastY = 0f
@@ -1312,9 +1314,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         invalidate()
     }
 
-    private fun select(page: Page, item: ImageItem) {
+    /**
+     * Whether the image's menu (Lock, Crop, Copy…) is wanted: only after a tap on the image, never while it's
+     * being dragged or resized (selected by holding or by adding it, it waits for a tap).
+     */
+    var selectionMenu = false
+        private set
+
+    private fun select(page: Page, item: ImageItem, menu: Boolean = false) {
         selPage = page
         selItem = item
+        selectionMenu = menu
         onSelection?.invoke(item)
         invalidate()
     }
@@ -2070,7 +2080,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     private fun onLassoRectIfChanged(r: RectF?) {
-        onLassoRect?.invoke(r)
+        // the lasso menu stays away while the selection is moved or stretched, and comes back on release
+        onLassoRect?.invoke(if (lassoDragging) null else r)
     }
 
     private fun drawImage(d: Doc, canvas: Canvas, im: ImageItem) {
@@ -2363,6 +2374,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         dragPointerId = e.getPointerId(idx)
         dragLastX = e.getX(idx)
         dragLastY = e.getY(idx)
+        dragStartX = dragLastX
+        dragStartY = dragLastY
+        if (selectionMenu) {
+            selectionMenu = false
+            onSelection?.invoke(item) // the menu hides while dragging or resizing
+        }
         if (corner >= 0) {
             mode = MODE_IMG_RESIZE
             resizeCorner = corner
@@ -2490,6 +2507,17 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val item = selItem
         val before = dragBefore
         val from = selPage
+        // a tap on the selected image (no real drag): show its menu
+        val tapped = mode == MODE_IMG_MOVE && hypot(dragLastX - dragStartX, dragLastY - dragStartY) < touchSlop
+        if (tapped && item != null && before != null) {
+            item.set(before) // no tiny shift from the finger
+            dragBefore = null
+            mode = MODE_NONE
+            selectionMenu = true
+            onSelection?.invoke(item)
+            invalidate()
+            return
+        }
         if (mode == MODE_IMG_MOVE && item != null && before != null && from != null && moveToPageUnderCentre(d, item, from, before)) {
             dragBefore = null
             mode = MODE_NONE
@@ -2556,7 +2584,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             // stop panning; the bar appears for this image (locked or not)
             velocity?.recycle(); velocity = null
             interacting = false
-            select(hit.first, hit.second)
+            select(hit.first, hit.second, menu = hit.second.locked)
             return
         }
         val i = pageAt(d, (downX - d.tx) / d.scale, (downY - d.ty) / d.scale)
@@ -2588,7 +2616,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
         val hit = imageAt(d, x, y)
         if (hit != null && !hit.second.locked) {
-            select(hit.first, hit.second)
+            select(hit.first, hit.second, menu = true)
             return false
         }
         clearSelection()
@@ -3194,7 +3222,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 if (hit != null) {
                     cancelLive()
                     mode = MODE_NONE
-                    select(page, hit)
+                    select(page, hit, menu = true)
                     return
                 }
             }

@@ -4731,7 +4731,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateSelBar(item: ImageItem?) {
-        if (item == null) {
+        // the menu waits for a tap on the image, and hides while it's dragged or resized
+        if (item == null || !pdfView.selectionMenu) {
             popOut(selBar)
             return
         }
