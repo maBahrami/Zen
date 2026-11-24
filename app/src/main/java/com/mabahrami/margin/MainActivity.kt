@@ -667,7 +667,7 @@ class MainActivity : ComponentActivity() {
         palette.addView(divider(), palDivider())
         palette.addView(iconButton(R.drawable.ic_minus, "Thinner") { stepWidth(-1) }, LinearLayout.LayoutParams(dp(28), dp(34)))
         val seek = SeekBar(this).apply {
-            max = 39 // width = (progress + 1) * 0.25 pt  ->  0.25 .. 10 pt
+            max = 39 // pen: 40 stops (0.25 .. 10 pt); setTool() sets the highlighter's own count
             setPadding(dp(11), dp(10), dp(11), dp(10))
             // keep the sideways-scrolling toolbar from stealing the drag
             setOnTouchListener { v, e ->
@@ -692,7 +692,7 @@ class MainActivity : ComponentActivity() {
             thumbTintList = null
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                    if (fromUser) setWidth((p + 1) * widthUnit())
+                    if (fromUser) setWidth(widthAt(p))
                 }
                 override fun onStartTrackingTouch(sb: SeekBar) {}
                 override fun onStopTrackingTouch(sb: SeekBar) {}
@@ -700,7 +700,7 @@ class MainActivity : ComponentActivity() {
         }
         seek.progress = ((prefs.getFloat("width", 1.5f) / 0.25f).roundToInt() - 1).coerceIn(0, 39)
         widthSeek = seek
-        palette.addView(seek, LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
+        palette.addView(seek, LinearLayout.LayoutParams(dp(140), ViewGroup.LayoutParams.WRAP_CONTENT))
         palette.addView(iconButton(R.drawable.ic_plus, "Thicker") { stepWidth(1) }, LinearLayout.LayoutParams(dp(28), dp(34)))
         widthLabel = TextView(this).apply {
             textSize = 11f
@@ -952,8 +952,13 @@ class MainActivity : ComponentActivity() {
         widthLabel.text = if (w % 1f == 0f) "${w.toInt()}" else String.format("%.2f", w).trimEnd('0').trimEnd('.')
     }
 
-    // pen: 0.25 .. 10 pt in 0.25 steps; highlighter: 0.75 .. 30 pt in 0.75 steps (slider has 40 stops)
-    private fun widthUnit() = if (hlMode) 0.75f else 0.25f
+    // pen: 0.25 .. 10 pt in 0.25 steps (40 stops); highlighter: 5 .. 70 pt in 1 pt steps (66 stops)
+    private fun widthMin() = if (hlMode) 5f else 0.25f
+    private fun widthStep() = if (hlMode) 1f else 0.25f
+    private fun widthStops() = if (hlMode) 66 else 40
+    private fun widthAt(stop: Int) = widthMin() + stop.coerceIn(0, widthStops() - 1) * widthStep()
+    private fun widthMax() = widthAt(widthStops() - 1)
+    private fun stopOf(w: Float) = ((w - widthMin()) / widthStep()).roundToInt().coerceIn(0, widthStops() - 1)
     private fun colorKey() = if (hlMode) "hl_color" else "color"
     private fun widthKey() = if (hlMode) "hl_width" else "width"
 
@@ -964,21 +969,21 @@ class MainActivity : ComponentActivity() {
         pdfView.highlighter = highlighter
         pdfView.eraserMode = false
         pdfView.lassoMode = false
-        val unit = widthUnit()
         pdfView.penColor = prefs.getInt(colorKey(), if (highlighter) YELLOW else COLORS[0])
-        pdfView.penWidth = prefs.getFloat(widthKey(), if (highlighter) 12f else 1.5f).coerceIn(unit, unit * 40)
-        widthSeek.progress = ((pdfView.penWidth / unit).roundToInt() - 1).coerceIn(0, 39)
+        pdfView.penWidth = prefs.getFloat(widthKey(), if (highlighter) 12f else 1.5f).coerceIn(widthMin(), widthMax())
+        widthSeek.max = widthStops() - 1
+        widthSeek.progress = stopOf(pdfView.penWidth)
         refreshTool()
     }
 
     /** − / + buttons. */
     private fun stepWidth(dir: Int) {
-        val unit = widthUnit()
+        val unit = widthStep()
         val w = pdfView.penWidth
         val step = if (!hlMode && (w > 3f || (dir < 0 && w > 3.25f))) 0.5f else unit
         val nw = ((w + dir * step) / unit).roundToInt() * unit
         if (pdfView.eraserMode) setEraser(false)
-        setWidth(nw.coerceIn(unit, unit * 40))
+        setWidth(nw.coerceIn(widthMin(), widthMax()))
     }
 
     /**
@@ -1098,20 +1103,19 @@ class MainActivity : ComponentActivity() {
         val colours = ringOrder.map { c ->
             PenWheel.Item(PenWheel.COLOUR, c, null, if (dark && !hlMode) Dark.ink(c) else c, drawing && c == pdfView.penColor)
         }
-        // size: the same 40 stops as the toolbar slider
-        val unit = widthUnit()
+        // size: the same stops as the toolbar slider
         val lineColour = (if (dark && !hlMode) Dark.ink(pdfView.penColor) else pdfView.penColor) or opaque
-        val stop = ((pdfView.penWidth / unit).roundToInt() - 1).coerceIn(0, 39)
+        val stop = stopOf(pdfView.penWidth)
         val w = PenWheel(this)
-        w.setup(loc[0] + x, loc[1] + y, tools, colours, lineColour, 40, stop,
+        w.setup(loc[0] + x, loc[1] + y, tools, colours, lineColour, widthStops(), stop,
             label = { st ->
-                val wd = (st + 1) * unit
+                val wd = widthAt(st)
                 (if (wd % 1f == 0f) "${wd.toInt()}" else String.format(java.util.Locale.US, "%.2f", wd).trimEnd('0').trimEnd('.')) + " pt"
             },
-            previewPx = { st -> (st + 1) * unit * (active?.scale ?: 1f) })
+            previewPx = { st -> widthAt(st) * (active?.scale ?: 1f) })
         w.onSize = { st ->
             if (pdfView.eraserMode || pdfView.lassoMode) setTool(hlMode)
-            setWidth(((st + 1) * widthUnit()).coerceIn(widthUnit(), widthUnit() * 40))
+            setWidth(widthAt(st))
         }
         w.canDo = { v ->
             val d = active
@@ -1332,7 +1336,7 @@ class MainActivity : ComponentActivity() {
     private fun setWidth(w: Float) {
         pdfView.penWidth = w
         prefs.edit().putFloat(widthKey(), w).apply()
-        val p = ((w / widthUnit()).roundToInt() - 1).coerceIn(0, 39)
+        val p = stopOf(w)
         if (widthSeek.progress != p) widthSeek.progress = p
         refreshTool()
     }

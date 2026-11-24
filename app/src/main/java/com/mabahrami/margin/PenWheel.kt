@@ -46,10 +46,10 @@ class PenWheel(context: Context) : View(context) {
         const val ACTION = 2
         private const val ACCENT = 0xFF0A84FF.toInt()
         /** The size slider's arc over the top (degrees; 0 = right, clockwise on screen). */
-        private const val ARC_START = -150.0
-        private const val ARC_SPAN = 120.0
+        private const val ARC_START = -155.0
+        private const val ARC_SPAN = 130.0
         /** Size steps (− and +) just past each end of the slider (degrees). */
-        private const val STEP_GAP = 19.0
+        private const val STEP_GAP = 18.0
         private const val TOOL_START = -PI * 3 / 4
     }
 
@@ -190,7 +190,7 @@ class PenWheel(context: Context) : View(context) {
             out[1] = cy
             return
         }
-        val a = Math.toRadians(if (item.value == 0) 168.0 else 12.0).toFloat() + turn
+        val a = Math.toRadians(if (item.value == 0) 164.0 else 16.0).toFloat() + turn
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
         out[1] = cy + rr * sin(a)
