@@ -52,6 +52,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -4162,8 +4163,158 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var importJob: kotlinx.coroutines.Job? = null
+
     private fun importAll(uris: List<Uri>, fromPicker: Boolean) {
-        lifecycleScope.launch { for (u in uris) importOne(u, fromPicker) }
+        importJob = lifecycleScope.launch {
+            try {
+                for (u in uris) importOne(u, fromPicker)
+            } finally {
+                hideLoading()
+            }
+        }
+    }
+
+    // ---------------- opening: "Downloading…" while a file is fetched, and a local copy of cloud files ----------------
+
+    private var loadingView: View? = null
+    private var loadingText: TextView? = null
+    private var loadingBar: android.widget.ProgressBar? = null
+    private var loadingShowAt: Runnable? = null
+
+    /** Files on the tablet itself (no download needed). */
+    private fun isLocalUri(uri: Uri): Boolean = uri.scheme == "file" || uri.authority in setOf(
+        "com.android.externalstorage.documents", "com.android.providers.downloads.documents",
+        "com.android.providers.media.documents", "media", "$packageName.files",
+    )
+
+    /**
+     * While a file is being fetched: Zen's home (the ensō) instead of the previous document, and a card with the
+     * file's name, how much has come in, and Cancel. Shown only if opening takes more than a moment.
+     */
+    private fun showLoading(name: String, remote: Boolean) {
+        val stage = stageView ?: return
+        hideLoading()
+        val cover = FrameLayout(this).apply {
+            setBackgroundColor(BG)
+            isClickable = true // the pages underneath can't be touched meanwhile
+            alpha = 0f
+        }
+        val dm = resources.displayMetrics
+        val logoSize = (minOf(dm.widthPixels, dm.heightPixels) * 0.6f).toInt().coerceAtMost(dp(420))
+        cover.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_launcher_fg)
+            alpha = 0.35f
+        }, FrameLayout.LayoutParams(logoSize, logoSize, Gravity.CENTER))
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(22), dp(16), dp(22), dp(10))
+            background = glass(16)
+            elevation = dp(10).toFloat()
+        }
+        card.addView(TextView(this).apply {
+            text = if (remote) "Downloading" else "Opening"
+            textSize = 15f
+            setTextColor(TEXT)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        })
+        card.addView(TextView(this).apply {
+            text = name
+            textSize = 13f
+            setTextColor(TEXT_DIM)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            gravity = Gravity.CENTER
+            maxWidth = dp(320)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+        val bar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            progressTintList = ColorStateList.valueOf(ACCENT)
+            indeterminateTintList = ColorStateList.valueOf(ACCENT)
+            max = 1000
+        }
+        card.addView(bar, LinearLayout.LayoutParams(dp(260), dp(10)).apply { topMargin = dp(12) })
+        val amount = TextView(this).apply {
+            textSize = 12f
+            setTextColor(TEXT_DIM)
+        }
+        card.addView(amount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+        card.addView(TextView(this).apply {
+            text = "Cancel"
+            textSize = 14f
+            setTextColor(ACCENT)
+            setPadding(dp(16), dp(8), dp(16), dp(6))
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 10))
+            isClickable = true
+            setOnClickListener { importJob?.cancel() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+        cover.addView(card, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        loadingView = cover
+        loadingText = amount
+        loadingBar = bar
+        // quick opens never flash the card: it comes in only after a moment
+        val show = Runnable {
+            if (loadingView === cover) {
+                stage.addView(cover, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                cover.animate().alpha(1f).setDuration(180).start()
+            }
+        }
+        loadingShowAt = show
+        main.postDelayed(show, 300)
+    }
+
+    /** How much of the file has come in ([total] < 0: size unknown). */
+    private fun loadingProgress(done: Long, total: Long) {
+        val t = loadingText ?: return
+        val bar = loadingBar ?: return
+        fun mb(b: Long) = String.format(Locale.US, "%.1f", b / 1_048_576.0)
+        if (total > 0) {
+            bar.isIndeterminate = false
+            bar.progress = (done * 1000 / total).toInt().coerceIn(0, 1000)
+            t.text = "${mb(done)} of ${mb(total)} MB"
+        } else t.text = "${mb(done)} MB"
+    }
+
+    private fun hideLoading() {
+        loadingShowAt?.let { main.removeCallbacks(it) }
+        loadingShowAt = null
+        val v = loadingView ?: return
+        loadingView = null
+        loadingText = null
+        loadingBar = null
+        v.animate().cancel()
+        v.animate().alpha(0f).setDuration(160).withEndAction { (v.parent as? ViewGroup)?.removeView(v) }.start()
+    }
+
+    /** Local copies of files from cloud storage (like Drive): opened again unchanged, they need no download. */
+    private fun remoteCacheDir() = File(filesDir, "remote_cache")
+
+    /** Size and last change of a document as its storage app reports them (no download), or null. */
+    private fun remoteStamp(uri: Uri): String? = try {
+        contentResolver.query(uri, arrayOf(OpenableColumns.SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use { c ->
+            if (!c.moveToFirst() || c.isNull(0) || c.isNull(1)) null
+            else "${c.getLong(0)};${c.getLong(1)}"
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun remoteKey(uri: Uri): String =
+        java.security.MessageDigest.getInstance("MD5").digest(uri.toString().toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    /** Keeps the cache to the newest 30 files and 1 GB. */
+    private fun pruneRemoteCache() {
+        val files = remoteCacheDir().listFiles()?.filter { it.name.endsWith(".pdf") }?.sortedByDescending { it.lastModified() } ?: return
+        var total = 0L
+        for ((k, f) in files.withIndex()) {
+            total += f.length()
+            if (k >= 30 || total > 1024L * 1024 * 1024) {
+                f.delete()
+                File(f.parentFile, f.name.removeSuffix(".pdf") + ".meta").delete()
+            }
+        }
     }
 
     private suspend fun importOne(uri: Uri, fromPicker: Boolean) {
@@ -4176,13 +4327,65 @@ class MainActivity : ComponentActivity() {
         val id = UUID.randomUUID().toString()
         val dir = File(Store.root(this), id)
         var name = "document.pdf"
+        var done = false
         try {
             name = withContext(Dispatchers.IO) { queryName(uri) } ?: name
+            val remote = !isLocalUri(uri)
+            showLoading(name, remote)
             val editable = withContext(Dispatchers.IO) {
                 dir.mkdirs()
                 val tmp = File(dir, "source.pdf.tmp")
-                val input = contentResolver.openInputStream(uri) ?: throw IOException("can't read the file")
-                input.use { inp -> FileOutputStream(tmp).use { out -> inp.copyTo(out); out.fd.sync() } }
+                // a cloud file opened before and unchanged since (same size and date): the local copy, no download
+                val stamp = if (remote) remoteStamp(uri) else null
+                val key = if (remote) remoteKey(uri) else null
+                val cached = key?.let { File(remoteCacheDir(), "$it.pdf") }
+                val meta = key?.let { File(remoteCacheDir(), "$it.meta") }
+                if (stamp != null && cached != null && meta != null && cached.exists() && meta.exists() &&
+                    meta.readText() == stamp) {
+                    cached.setLastModified(System.currentTimeMillis())
+                    cached.copyTo(tmp, overwrite = true)
+                } else {
+                    val total = try {
+                        contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else -1L
+                        } ?: -1L
+                    } catch (e: Exception) {
+                        -1L
+                    }
+                    val input = contentResolver.openInputStream(uri) ?: throw IOException("can't read the file")
+                    input.use { inp ->
+                        FileOutputStream(tmp).use { out ->
+                            val buf = ByteArray(128 * 1024)
+                            var got = 0L
+                            var lastShown = 0L
+                            while (true) {
+                                ensureActive() // Cancel stops the download here
+                                val n = inp.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                got += n
+                                val now = android.os.SystemClock.uptimeMillis()
+                                if (now - lastShown > 100) {
+                                    lastShown = now
+                                    val g = got
+                                    main.post { loadingProgress(g, total) }
+                                }
+                            }
+                            out.fd.sync()
+                        }
+                    }
+                    // keep a copy for next time
+                    if (stamp != null && cached != null && meta != null) {
+                        try {
+                            remoteCacheDir().mkdirs()
+                            tmp.copyTo(cached, overwrite = true)
+                            meta.writeText(stamp)
+                            pruneRemoteCache()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "remote cache", e)
+                        }
+                    }
+                }
                 val src = File(dir, "source.pdf")
                 if (!tmp.renameTo(src)) throw IOException("can't store the file")
                 // A file saved by Margin carries the original + editable strokes inside it.
@@ -4199,7 +4402,9 @@ class MainActivity : ComponentActivity() {
             d.saveUri = if (editable && fromPicker) uri.toString() else null
             val resume = lastPageOf(d) // before the new tab starts recording its own page
             if (resume > 0) openedAt[d.id] = android.os.SystemClock.uptimeMillis()
+            hideLoading()
             addDoc(d, true)
+            done = true
             markDirty(d)
             if (resume in 1 until d.pageCount) showResumeChip(d, resume)
         } catch (t: Throwable) {
@@ -4207,6 +4412,12 @@ class MainActivity : ComponentActivity() {
             Log.e(TAG, "import", t)
             withContext(Dispatchers.IO) { dir.deleteRecursively() }
             toast("Couldn't open $name: ${t.message ?: "unknown error"}")
+        } finally {
+            if (!done) {
+                hideLoading()
+                // cancelled: leave nothing half-copied behind
+                withContext(NonCancellable + Dispatchers.IO) { if (!File(dir, "state.json").exists()) dir.deleteRecursively() }
+            }
         }
     }
 
