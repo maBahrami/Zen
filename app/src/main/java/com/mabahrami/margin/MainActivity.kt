@@ -1128,7 +1128,7 @@ class MainActivity : ComponentActivity() {
     // ---------------- recent clipboard images ----------------
 
     /** How many recent clipboard images are kept. */
-    private val clipHistoryMax = 5
+    private val clipHistoryMax = 6
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { recordClipboardImage() }
     /** The clipboard item last looked at (its time stamp), so the same one isn't read again on every focus. */
     private var lastClipStamp = -1L
@@ -5090,7 +5090,7 @@ class MainActivity : ComponentActivity() {
             // recent clipboard images (newest first): tap one to paste it here
             recordClipboardImage()
             val recent = withContext(Dispatchers.IO) {
-                clipHistory().mapNotNull { f -> decodeFileThumb(f, dp(120))?.let { f to it } }
+                clipHistory().mapNotNull { f -> decodeFileThumb(f, dp(200))?.let { f to it } }
             }
             if (active !== d) return@launch
             // with recent images to pick from, a picture on the clipboard needs no big preview of its own
@@ -5159,9 +5159,18 @@ class MainActivity : ComponentActivity() {
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     setPadding(0, dp(6), 0, dp(6))
                 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-                val strip = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
-                for ((f, bmp) in recent) {
-                    strip.addView(ImageView(this@MainActivity).apply {
+                // a grid: 3 to a row, 2 rows
+                val grid = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                var row: LinearLayout? = null
+                for ((k, pair) in recent.withIndex()) {
+                    val (f, bmp) = pair
+                    if (k % 3 == 0) {
+                        row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                        grid.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            if (k > 0) topMargin = dp(8)
+                        })
+                    }
+                    row!!.addView(ImageView(this@MainActivity).apply {
                         setImageBitmap(bmp)
                         scaleType = ImageView.ScaleType.CENTER_CROP
                         background = rounded(0xFF2C2C2E.toInt(), 6)
@@ -5178,12 +5187,9 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                    }, LinearLayout.LayoutParams(dp(58), dp(58)).apply { marginEnd = dp(6) })
+                    }, LinearLayout.LayoutParams(dp(100), dp(100)).apply { if (k % 3 > 0) marginStart = dp(8) })
                 }
-                box.addView(HorizontalScrollView(this@MainActivity).apply {
-                    isHorizontalScrollBarEnabled = false
-                    addView(strip)
-                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                box.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(6)
                 })
             }
