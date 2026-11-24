@@ -2786,6 +2786,36 @@ class MainActivity : ComponentActivity() {
     // ---------------- favourite folders ----------------
 
     /** Favourite folders (tree uri, name), in the order they were added. */
+    /**
+     * Name of the folder holding the saved file [uri], or null if it can't be told. A favourite folder gives its
+     * own name; otherwise the folder is read from the file's id where the storage app uses paths
+     * (like "primary:Documents/Notes/a.pdf"), and the top of the storage is called "Internal storage".
+     */
+    private fun folderNameOf(uri: Uri): String? = try {
+        val docId = DocumentsContract.getDocumentId(uri)
+        val fav = favoriteFolders().firstOrNull { (tree, _) ->
+            try {
+                val t = Uri.parse(tree)
+                t.authority == uri.authority && docId.startsWith(DocumentsContract.getTreeDocumentId(t).trimEnd('/') + "/") &&
+                    docId.removePrefix(DocumentsContract.getTreeDocumentId(t).trimEnd('/') + "/").indexOf('/') < 0
+            } catch (e: Exception) {
+                false
+            }
+        }
+        when {
+            fav != null -> fav.second
+            uri.authority == "com.android.externalstorage.documents" && docId.contains(':') -> {
+                val path = docId.substringAfter(':')
+                if (path.contains('/')) path.substringBeforeLast('/').substringAfterLast('/')
+                else if (docId.startsWith("primary:")) "Internal storage" else null
+            }
+            uri.authority == "com.android.providers.downloads.documents" -> "Downloads"
+            else -> null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     private fun favoriteFolders(): List<Pair<String, String>> = try {
         val arr = org.json.JSONArray(prefs.getString("fav_folders", "[]"))
         (0 until arr.length()).mapNotNull { k ->
@@ -4287,7 +4317,11 @@ class MainActivity : ComponentActivity() {
                     markDirty(d)
                     rebuildTabs()
                     updateButtons()
-                    toast(if (renameFailed) "Saved, but this location doesn't allow renaming" else "Saved")
+                    // say what was saved and where: the file's name, then its folder (when it can be told)
+                    val where = withContext(Dispatchers.IO) { folderNameOf(finalUri) }
+                    val head = if (renameFailed) "Saved, but this location doesn't allow renaming" else "Saved"
+                    Toast.makeText(this@MainActivity,
+                        head + "\n" + d.name + (if (where != null) "\nin $where" else ""), Toast.LENGTH_LONG).show()
                 } else {
                     if (only != null) pagesPanel.endSelection()
                     toast("Exported")
