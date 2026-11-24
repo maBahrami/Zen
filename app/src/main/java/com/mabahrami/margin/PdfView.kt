@@ -525,8 +525,19 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     /** Eraser radius in dp on screen (set from the size slider while the eraser is on). */
     var eraserDp = 14f
     private val eraserPx: Float get() = eraserDp * density
-    private val handlePx = 9f * density
-    private val grabPx = 26f * density
+    private val handlePx = 6f * density
+    private val grabPx = 22f * density
+
+    /**
+     * How close (document units) a touch must be to a corner or side handle to resize. Outside the box the
+     * full reach; inside it at most 30% of the box's shorter side (and at least 8dp), so a small selection
+     * still has room in the middle to be dragged instead of resized.
+     */
+    private fun grabReach(d: Doc, inside: Boolean, w: Float, h: Float): Float {
+        val full = grabPx / d.scale
+        if (!inside) return full
+        return min(full, max(8f * density / d.scale, min(w, h) * 0.3f))
+    }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val longPressMs = ViewConfiguration.getLongPressTimeout().toLong()
 
@@ -1021,7 +1032,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (i < 0 || tops.size != d.pageCount) return false
         val lx = localX(d, i, e.getX(idx))
         val ly = localY(d, i, e.getY(idx))
-        val g = grabPx / d.scale
+        val inBox = selBox.contains(lx, ly)
+        val g = grabReach(d, inBox, selBox.width(), selBox.height())
         var corner = -1
         for (k in 0..3) {
             val hx = if (k == 0 || k == 2) selBox.left else selBox.right
@@ -1035,8 +1047,8 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (corner < 0) {
             val cx = selBox.centerX()
             val cy = selBox.centerY()
-            val tall = selBox.height() > 2 * g
-            val wide = selBox.width() > 2 * g
+            val tall = selBox.height() > 2 * grabPx / d.scale
+            val wide = selBox.width() > 2 * grabPx / d.scale
             side = when {
                 tall && abs(lx - selBox.left) < g && abs(ly - cy) < g -> 4
                 tall && abs(lx - selBox.right) < g && abs(ly - cy) < g -> 5
@@ -2337,7 +2349,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (i < 0 || tops.size != d.pageCount) return false
         val lx = localX(d, i, e.getX(idx))
         val ly = localY(d, i, e.getY(idx))
-        val g = grabPx / d.scale
+        val g = grabReach(d, item.contains(lx, ly), item.w, item.h)
         var corner = -1
         for (k in 0..3) {
             val hx = if (k == 0 || k == 2) item.x else item.x + item.w
