@@ -372,7 +372,28 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return -1
     }
 
-    /** Draws the + in each visible gap (document coordinates). */
+    /** The dim + beside a page (left or right) was tapped: open the margin settings. */
+    var onSidePlus: ((page: Int, right: Boolean) -> Unit)? = null
+
+    /** Distance (screen px) of the side + from the page's outer edge (its margin included). */
+    private val sidePlusOff = 14f * density
+
+    /** Page whose side + is at (sx, sy) on screen: index * 2 (+1 for the right side), else -1. */
+    private fun sidePlusAt(d: Doc, sx: Float, sy: Float): Int {
+        if (d.scale <= 0f || !gapPlusShown(d) || tops.size != d.pageCount) return -1
+        val s = d.scale
+        val hit = 20f * density
+        val i = pageNear(d, (sy - d.ty) / s)
+        if (i !in 0 until d.pageCount) return -1
+        val cy = d.ty + (tops[i] + d.pages[i].h / 2f) * s
+        val lx = d.tx + pl(i) * s - sidePlusOff
+        val rx = d.tx + (pl(i) + pageFullW(d, i)) * s + sidePlusOff
+        if (hypot(sx - lx, sy - cy) <= hit) return i * 2
+        if (hypot(sx - rx, sy - cy) <= hit) return i * 2 + 1
+        return -1
+    }
+
+    /** Draws the + in each visible gap, and beside each visible page (document coordinates). */
     private fun drawGapPluses(d: Doc, canvas: Canvas, s: Float, visTop: Float, visBottom: Float) {
         if (!gapPlusShown(d)) return
         // just a small, thin, faint plus: there when you look for it, not catching the eye
@@ -385,6 +406,16 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             if (cy < visTop - r || cy > visBottom + r) continue
             canvas.drawLine(cx - arm, cy, cx + arm, cy, gapPlusArm)
             canvas.drawLine(cx, cy - arm, cx, cy + arm, gapPlusArm)
+        }
+        // beside each page, halfway down: tap for the margin settings
+        val off = sidePlusOff / s
+        for (i in 0 until min(d.pageCount, tops.size)) {
+            val cy = tops[i] + d.pages[i].h / 2f
+            if (cy < visTop - r || cy > visBottom + r) continue
+            for (sx in floatArrayOf(pl(i) - off, pl(i) + pageFullW(d, i) + off)) {
+                canvas.drawLine(sx - arm, cy, sx + arm, cy, gapPlusArm)
+                canvas.drawLine(sx, cy - arm, sx, cy + arm, gapPlusArm)
+            }
         }
     }
     /** Where the "+" of the pull indicator was last drawn (view px), so the page window can grow out of it. */
@@ -2520,6 +2551,12 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             onAddPageBetween?.invoke(at)
             return false
         }
+        val side = sidePlusAt(d, x, y)
+        if (side >= 0) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onSidePlus?.invoke(side / 2, side % 2 == 1)
+            return false
+        }
         val hit = imageAt(d, x, y)
         if (hit != null && !hit.second.locked) {
             select(hit.first, hit.second)
@@ -2926,9 +2963,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             if (mode == MODE_NONE) {
                 // pen down in the gap between pages: the + adds a page there
                 val at = gapPlusAt(d, x, y)
+                val side = if (at < 0) sidePlusAt(d, x, y) else -1
                 if (at >= 0) {
                     performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     onAddPageBetween?.invoke(at)
+                } else if (side >= 0) {
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onSidePlus?.invoke(side / 2, side % 2 == 1)
                 }
             }
         }

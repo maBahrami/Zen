@@ -355,6 +355,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         v.onAddPageBetween = { at -> if (v === pdfView && active != null) askNewPage(at) }
+        v.onSidePlus = { _, _ -> if (v === pdfView && active != null) showMargins() }
         v.onPullAddPage = { atStart, plusX, plusY ->
             if (v === pdfView) active?.let {
                 // the New page window grows out of the "+" (not out of where the finger first touched)
