@@ -580,12 +580,21 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
             setOnClickListener { v -> showTabList(v) }
         }
-        // tab counter sits left of the tabs; the tabs themselves stay as they are
-        bar.addView(tabCount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24)).apply {
-            marginStart = dp(10)
+        // tab counter and tabs in one long pill; it takes the space between the other pills, so its
+        // length stays the same however many tabs are open (the tabs scroll inside it)
+        val tabPill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(5), 0, dp(5), 0)
+            background = glass(20)
+            elevation = dp(3).toFloat()
+        }
+        tabPill.addView(tabCount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24)).apply {
+            marginStart = dp(2); marginEnd = dp(4)
         })
-        bar.addView(tabScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-            marginStart = dp(6); marginEnd = dp(10)
+        tabPill.addView(tabScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(tabPill, LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+            marginStart = dp(10); marginEnd = dp(10)
         })
         insertBtn = barIcon(R.drawable.ic_plus, "Insert") { showInsertMenu(insertBtn) }
         pagesBtn = barIcon(R.drawable.ic_pages, "Pages") { togglePages() }
