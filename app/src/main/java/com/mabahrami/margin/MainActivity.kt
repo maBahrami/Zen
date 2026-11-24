@@ -542,10 +542,14 @@ class MainActivity : ComponentActivity() {
         fun pill(vararg views: View): LinearLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(3), dp(2), dp(3), dp(2))
+            setPadding(dp(2), dp(2), dp(2), dp(2))
             background = glass(20)
             elevation = dp(3).toFloat()
-            for ((k, v) in views.withIndex()) addView(v, barLp(if (k == 0) 0 else 2))
+            // narrow buttons side by side keep the pills short (the glyph stays 18dp)
+            for (v in views) {
+                v.setPadding(dp(7), dp(9), dp(7), dp(9))
+                addView(v, LinearLayout.LayoutParams(dp(32), dp(36)))
+            }
         }
         fun pillLp(startDp: Int) = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -605,11 +609,11 @@ class MainActivity : ComponentActivity() {
         saveBtn = barIcon(R.drawable.ic_save, "Save or export") { showSaveMenu(saveBtn) }
         saveBtnView = saveBtn
         focusBtn = barIcon(R.drawable.ic_focus, "Focus mode") { setFocusLevel(if (focusLevel == 0) 1 else 2) }
-        bar.addView(pill(saveBtn, barIcon(R.drawable.ic_share, "Share") { active?.let { share(it) } }, focusBtn), pillLp(10))
-        // light / dark view of the open document, a round button at the far right
+        bar.addView(pill(saveBtn, barIcon(R.drawable.ic_share, "Share") { active?.let { share(it) } }), pillLp(10))
+        // view: focus mode and the light / dark view of the open document, at the far right
         darkBtn = barIcon(R.drawable.ic_dark, "Dark view (hold for styles)") { toggleDark() }
         darkBtn.setOnLongClickListener { showDarkStyles(darkBtn); true }
-        bar.addView(pill(darkBtn), pillLp(10))
+        bar.addView(pill(focusBtn, darkBtn), pillLp(10))
         // a soft fade from the window colour behind the bar keeps it readable over the pages scrolling underneath;
         // the area itself takes no touches, so the pages under the fade can still be used
         val topArea = FrameLayout(this).apply {
