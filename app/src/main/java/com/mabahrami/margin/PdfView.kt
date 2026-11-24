@@ -1883,11 +1883,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         canvas.save()
         canvas.translate(d.tx, d.ty)
         canvas.scale(s, s)
+        var vf = -1
+        var vl = -1
         for (i in 0 until d.pageCount) {
             val page = d.pages[i]
             val top = tops[i]
             val bottom = top + page.h
             if (bottom < visTop || top > visBottom) continue
+            if (vf < 0) vf = i
+            vl = i
             val left = pl(i)
             val right = left + pageFullW(d, i)
             if (shadowForScale != s) {
@@ -2019,6 +2023,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
             canvas.restore()
         }
+        visDoc = d
+        if (vf >= 0) { visFirst = vf; visLast = vl }
+        prefetchAround(d, s)
         drawGapPluses(d, canvas, s, visTop, visBottom)
         drawSearchHits(d, canvas, s, visTop, visBottom)
         drawLasso(d, canvas, s)
@@ -2223,6 +2230,94 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return min(b, cap)
     }
 
+    // ---- page render queue: the pages on screen first; pages scrolled far away are skipped ----
+    /** Pages on screen in the last frame (indices), and the document they belong to. */
+    @Volatile private var visFirst = 0
+    @Volatile private var visLast = -1
+    @Volatile private var visDoc: Doc? = null
+    private class RenderJob(val key: Long, val doc: Doc, val index: Int, val onDrop: () -> Unit, val run: () -> Unit)
+    private val renderJobs = ArrayList<RenderJob>() // guarded by itself
+    private var pumpQueued = false                // guarded by renderJobs
+
+    /** How many pages around the ones on screen still count as wanted (rendered ahead for scrolling). */
+    private val keepAround = 3
+
+    /**
+     * Queues a page render. The render thread always takes the job nearest to what's on screen now; a job
+     * for a page that has since scrolled more than [keepAround] pages away (or for another file) is dropped
+     * unrendered. So jumping from the start of a long file to its end doesn't wait for every page passed on
+     * the way.
+     */
+    private fun enqueueRender(key: Long, d: Doc, index: Int, onDrop: () -> Unit, run: () -> Unit) {
+        synchronized(renderJobs) {
+            renderJobs.add(RenderJob(key, d, index, onDrop, run))
+            if (pumpQueued) return
+            pumpQueued = true
+        }
+        renderExec.execute { pumpRenders() }
+    }
+
+    /** Render thread: runs the most wanted job, drops stale ones, and queues itself again while work is left. */
+    private fun pumpRenders() {
+        var job: RenderJob? = null
+        val dropped = ArrayList<RenderJob>()
+        synchronized(renderJobs) {
+            val vd = visDoc
+            val f = visFirst
+            val l = visLast
+            var best = Int.MAX_VALUE
+            val it = renderJobs.iterator()
+            while (it.hasNext()) {
+                val j = it.next()
+                val dist = when {
+                    j.index < 0 -> 0
+                    l < f -> 0                       // nothing measured yet: keep everything
+                    j.index < f -> f - j.index
+                    j.index > l -> j.index - l
+                    else -> 0
+                }
+                if (j.doc.closed || (vd != null && j.doc !== vd) || dist > keepAround) {
+                    it.remove(); dropped.add(j); continue
+                }
+                if (dist < best) { best = dist; job = j }
+            }
+            job?.let { renderJobs.remove(it) }
+            if (renderJobs.isEmpty() && job == null) pumpQueued = false
+        }
+        if (dropped.isNotEmpty()) post { for (j in dropped) j.onDrop() }
+        val j = job ?: return
+        try {
+            j.run()
+        } catch (t: Throwable) {
+            post { j.onDrop() }
+        }
+        val more = synchronized(renderJobs) {
+            if (renderJobs.isEmpty()) { pumpQueued = false; false } else true
+        }
+        if (more) {
+            try {
+                renderExec.execute { pumpRenders() }
+            } catch (e: Exception) {
+                synchronized(renderJobs) { pumpQueued = false }
+            }
+        }
+    }
+
+    /** When nothing is waiting: renders the pages just above and below the screen, so scrolling finds them ready. */
+    private fun prefetchAround(d: Doc, s: Float) {
+        if (interacting || pending.isNotEmpty() || visLast < visFirst) return
+        for (i in listOf(visLast + 1, visFirst - 1, visLast + 2, visFirst - 2)) {
+            val page = d.pages.getOrNull(i) ?: continue
+            if (page.isBlank || page.src < 0) continue
+            val pb = cache.get(pageKey(d, page, d.dark))
+            val want = bucketFor(page, s)
+            if (pb == null || abs(pb.scale - want) > 0.01f) {
+                requestRender(d, page, want)
+                return // one at a time
+            }
+        }
+    }
+
     private fun requestRender(d: Doc, page: Page, scale: Float) {
         if (page.src < 0) return
         val dark = d.dark
@@ -2235,8 +2330,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val src = page.src
         val pw = page.w
         val ph = page.h
+        val at = d.pages.indexOf(page)
         try {
-            renderExec.execute {
+            enqueueRender(key, d, at, onDrop = { if (gen == generation) pending.remove(key) }) {
                 val bmp = renderPage(d, file, src, w, h)
                 if (bmp != null && dark) {
                     try {
