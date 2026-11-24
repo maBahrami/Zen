@@ -1645,10 +1645,20 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         invalidate()
     }
 
-    fun trimCache() {
-        cache.evictAll()
+    /**
+     * Frees bitmap memory. [all] = false (the app just went out of sight, e.g. to the file picker or Drive):
+     * the close-ups go, and the page cache shrinks to its most recently seen quarter, so coming back is
+     * still quick. [all] = true (the system is short of memory): everything goes.
+     */
+    fun trimCache(all: Boolean = true) {
         detailCache.evictAll()
-        imgCache.evictAll()
+        if (all) {
+            cache.evictAll()
+            imgCache.evictAll()
+        } else {
+            cache.trimToSize(cache.maxSize() / 4)
+            imgCache.trimToSize(imgCache.maxSize() / 4)
+        }
     }
 
     /** Side by side: each view gets a share (0..1] of the normal bitmap memory, so two views together never use more. */

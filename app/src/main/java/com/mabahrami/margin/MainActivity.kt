@@ -441,9 +441,13 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
-            paneA.trimCache()
-            paneB.trimCache()
+        // out of sight (a picker, Drive, another app): keep the most recent pages so coming back is quick;
+        // only real memory pressure clears everything
+        val all = level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        if (all || level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            paneA.trimCache(all)
+            paneB.trimCache(all)
         }
     }
 
@@ -3207,7 +3211,7 @@ class MainActivity : ComponentActivity() {
      * pages start below it (and scroll under it). In full focus mode the bar is hidden and nothing is kept free.
      */
     private fun updateTopInset() {
-        if (!::topBarRow.isInitialized) return
+        if (!::topBarRow.isInitialized || !::searchBar.isInitialized || !::pagesPanel.isInitialized) return
         val h = if (titleBar.visibility == View.VISIBLE && topBarRow.height > 0) topBarRow.bottom else 0
         if (h == topInsetPx) return
         topInsetPx = h
