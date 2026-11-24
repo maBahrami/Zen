@@ -383,25 +383,29 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (d.scale <= 0f || !gapPlusShown(d) || tops.size != d.pageCount) return -1
         val s = d.scale
         val hit = 20f * density
-        val i = pageNear(d, (sy - d.ty) / s)
-        if (i !in 0 until d.pageCount) return -1
+        val i = sidePlusPage(d)
+        if (i < 0) return -1
+        val cy = d.ty + sidePlusY(d, i) * s
         val lx = d.tx + pl(i) * s - sidePlusOff
         val rx = d.tx + (pl(i) + pageFullW(d, i)) * s + sidePlusOff
-        for (f in sidePlusSpots(d, i)) {
-            val cy = d.ty + (tops[i] + d.pages[i].h * f) * s
-            if (hypot(sx - lx, sy - cy) <= hit) return i * 2
-            if (hypot(sx - rx, sy - cy) <= hit) return i * 2 + 1
-        }
+        if (hypot(sx - lx, sy - cy) <= hit) return i * 2
+        if (hypot(sx - rx, sy - cy) <= hit) return i * 2 + 1
         return -1
     }
 
-    private val oneSpot = floatArrayOf(0.5f)
-    private val twoSpots = floatArrayOf(1f / 3f, 2f / 3f)
+    /** The page at the middle of the screen (the one the side + signs float beside), or -1. */
+    private fun sidePlusPage(d: Doc): Int {
+        if (d.pageCount == 0 || tops.size != d.pageCount || d.scale <= 0f) return -1
+        return pageNear(d, (height / 2f - d.ty) / d.scale)
+    }
 
-    /** Heights (fractions of the page) of the side + signs: two on A4 or larger pages, else one in the middle. */
-    private fun sidePlusSpots(d: Doc, i: Int): FloatArray {
-        val p = d.pages[i]
-        return if (max(p.w, p.h) >= 830) twoSpots else oneSpot // A4 is 595 x 842 pt
+    /** Height (document units) of the floating side + signs: the screen's middle, kept on the page. */
+    private fun sidePlusY(d: Doc, i: Int): Float {
+        val pad = 24f * density / d.scale
+        val top = tops[i] + pad
+        val bottom = tops[i] + d.pages[i].h - pad
+        val mid = (height / 2f - d.ty) / d.scale
+        return if (bottom > top) mid.coerceIn(top, bottom) else tops[i] + d.pages[i].h / 2f
     }
 
     /** Draws the + in each visible gap, and beside each visible page (document coordinates). */
@@ -418,18 +422,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             canvas.drawLine(cx - arm, cy, cx + arm, cy, gapPlusArm)
             canvas.drawLine(cx, cy - arm, cx, cy + arm, gapPlusArm)
         }
-        // beside each page, halfway down: tap for the margin settings
-        val off = sidePlusOff / s
-        for (i in 0 until min(d.pageCount, tops.size)) {
-            if (tops[i] > visBottom + r || tops[i] + d.pages[i].h < visTop - r) continue
-            val lx = pl(i) - off
-            val rx = pl(i) + pageFullW(d, i) + off
-            for (f in sidePlusSpots(d, i)) {
-                val cy = tops[i] + d.pages[i].h * f
-                for (sx in floatArrayOf(lx, rx)) {
-                    canvas.drawLine(sx - arm, cy, sx + arm, cy, gapPlusArm)
-                    canvas.drawLine(sx, cy - arm, sx, cy + arm, gapPlusArm)
-                }
+        // one + on each side of the page in the middle of the screen, floating at the screen's middle height
+        // (kept on the page): tap for the margin settings
+        val i = sidePlusPage(d)
+        if (i >= 0) {
+            val off = sidePlusOff / s
+            val cy = sidePlusY(d, i)
+            for (sx in floatArrayOf(pl(i) - off, pl(i) + pageFullW(d, i) + off)) {
+                canvas.drawLine(sx - arm, cy, sx + arm, cy, gapPlusArm)
+                canvas.drawLine(sx, cy - arm, sx, cy + arm, gapPlusArm)
             }
         }
     }
