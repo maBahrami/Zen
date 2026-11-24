@@ -4701,9 +4701,12 @@ class MainActivity : ComponentActivity() {
         val sh = pdfView.height.toFloat()
         val gap = dp(10).toFloat()
         val m = dp(6).toFloat()
-        var y = b + gap
-        if (y + bh > sh - m) y = t - gap - bh
-        if (y < m) y = (sh - bh - m).coerceAtMost(b + gap)
+        // above the selection by default (clear of the top bar and the pen toolbar); below it only when
+        // there's no room above; a selection filling the screen keeps the bar at the bottom
+        val minTop = topInsetPx.coerceAtLeast(0) + dp(60).toFloat()
+        var y = t - gap - bh
+        if (y < minTop) y = b + gap
+        if (y + bh > sh - m) y = sh - bh - m
         y = y.coerceIn(m, maxOf(m, sh - bh - m))
         // side by side: the right side starts further right
         bar.translationX = pdfView.left + ((l + r) / 2f - bw / 2f).coerceIn(m, maxOf(m, sw - bw - m))
@@ -4726,7 +4729,7 @@ class MainActivity : ComponentActivity() {
         val m = dp(6).toFloat()
         // above the image by default; below it only when there's no room above
         var y = t - gap - bh
-        if (y < dp(60)) y = b + gap                             // (keeps clear of the floating pen bar at the top)
+        if (y < topInsetPx.coerceAtLeast(0) + dp(60)) y = b + gap // (keeps clear of the top bar and the pen bar)
         if (y + bh > sh - m) y = m                              // image fills the screen: stay on screen, at the top
         y = y.coerceIn(m, maxOf(m, sh - bh - m))
         val x = ((l + r) / 2f - bw / 2f).coerceIn(m, maxOf(m, sw - bw - m))
