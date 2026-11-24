@@ -372,6 +372,63 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return -1
     }
 
+    // ---- search: every place the word was found is marked, the current one stronger ----
+    private var searchHits: List<PdfSearch.Hit> = emptyList()
+    private var searchCurrent = -1
+    private val searchByPage = java.util.IdentityHashMap<Page, ArrayList<Int>>()
+    private val searchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66FFD60A }
+    private val searchCurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x99FF9F0A.toInt() }
+    private val searchCurRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFFFF9F0A.toInt() }
+    private val searchRect = RectF()
+
+    /** Marks [hits] (empty: none), with [current] as the one being looked at. */
+    fun setSearchHits(hits: List<PdfSearch.Hit>, current: Int) {
+        searchHits = hits
+        searchCurrent = current
+        searchByPage.clear()
+        for ((k, h) in hits.withIndex()) searchByPage.getOrPut(h.page) { ArrayList() }.add(k)
+        invalidate()
+    }
+
+    /** Scrolls so hit [k] is in view (a little above the middle), keeping the zoom; marks it as current. */
+    fun showSearchHit(k: Int) {
+        val d = doc ?: return
+        searchCurrent = k
+        val h = searchHits.getOrNull(k) ?: run { invalidate(); return }
+        val i = d.pages.indexOf(h.page)
+        if (i < 0 || tops.size != d.pageCount || d.scale <= 0f) { invalidate(); return }
+        val u = RectF(h.rects[0])
+        for (rr in h.rects) u.union(rr)
+        val s = d.scale
+        val x = pl(i) + mlOf(d, i) + u.centerX()
+        val y = tops[i] + u.centerY()
+        val sx = d.tx + x * s
+        val tx = if (sx < edgePx * 3 || sx > width - edgePx * 3) width / 2f - x * s else d.tx
+        animateView(d, s, tx, height * 0.42f - y * s)
+    }
+
+    private fun drawSearchHits(d: Doc, canvas: Canvas, s: Float, visTop: Float, visBottom: Float) {
+        if (searchHits.isEmpty()) return
+        val pad = 1.5f * density / s
+        searchCurRing.strokeWidth = 1.5f * density / s
+        for (i in 0 until min(d.pageCount, tops.size)) {
+            val page = d.pages[i]
+            if (tops[i] > visBottom || tops[i] + page.h < visTop) continue
+            val list = searchByPage[page] ?: continue
+            val ox = pl(i) + mlOf(d, i)
+            val oy = tops[i]
+            for (k in list) {
+                val cur = k == searchCurrent
+                for (rr in searchHits[k].rects) {
+                    searchRect.set(ox + rr.left - pad, oy + rr.top - pad, ox + rr.right + pad, oy + rr.bottom + pad)
+                    val rad = 2f * density / s
+                    canvas.drawRoundRect(searchRect, rad, rad, if (cur) searchCurPaint else searchPaint)
+                    if (cur) canvas.drawRoundRect(searchRect, rad, rad, searchCurRing)
+                }
+            }
+        }
+    }
+
     /** The dim + beside a page (left or right) was tapped: open the margin settings. */
     var onSidePlus: ((page: Int, right: Boolean) -> Unit)? = null
 
@@ -1951,6 +2008,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             canvas.restore()
         }
         drawGapPluses(d, canvas, s, visTop, visBottom)
+        drawSearchHits(d, canvas, s, visTop, visBottom)
         drawLasso(d, canvas, s)
         // selected image frame (and the image itself while dragging) on top of everything, unclipped,
         // so it can be carried across page boundaries

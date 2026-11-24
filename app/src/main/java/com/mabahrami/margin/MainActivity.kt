@@ -607,7 +607,8 @@ class MainActivity : ComponentActivity() {
         insertBtn = barIcon(R.drawable.ic_plus, "Insert") { showInsertMenu(insertBtn) }
         pagesBtn = barIcon(R.drawable.ic_pages, "Pages") { togglePages() }
         // page tools
-        bar.addView(pill(pagesBtn, barIcon(R.drawable.ic_margins, "Margins") { showMargins() }, insertBtn), pillLp(0))
+        bar.addView(pill(barIcon(R.drawable.ic_search, "Search") { toggleSearch() }, pagesBtn,
+            barIcon(R.drawable.ic_margins, "Margins") { showMargins() }, insertBtn), pillLp(0))
         // file & view
         lateinit var saveBtn: ImageView
         saveBtn = barIcon(R.drawable.ic_save, "Save or export") { showSaveMenu(saveBtn) }
@@ -784,6 +785,10 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.CENTER_HORIZONTAL,
         ))
+        stage.addView(buildSearchBar(), FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END,
+        ).apply { marginEnd = dp(12); topMargin = dp(60) })
 
         // iOS-style edit menu for the selected image: text items with thin separators
         selBar = LinearLayout(this).apply {
@@ -2248,6 +2253,7 @@ class MainActivity : ComponentActivity() {
         rebuildTabs()
         updateButtons()
         saveSession()
+        if (active !== before && ::searchBar.isInitialized && searchBar.visibility == View.VISIBLE) runSearch()
     }
 
     // ======================= side by side =======================
@@ -3098,6 +3104,168 @@ class MainActivity : ComponentActivity() {
         }
         paneA.topInset = h.toFloat()
         paneB.topInset = h.toFloat()
+        // the search bar sits under the top bar, right of the pen toolbar's row
+        (searchBar.layoutParams as? ViewGroup.MarginLayoutParams)?.let { it.topMargin = h + dp(60); searchBar.layoutParams = it }
+    }
+
+    // ======================= search =======================
+
+    private lateinit var searchBar: LinearLayout
+    private lateinit var searchInput: EditText
+    private lateinit var searchCount: TextView
+    private var searchResults: List<PdfSearch.Hit> = emptyList()
+    private var searchIdx = -1
+    private var searchJob: kotlinx.coroutines.Job? = null
+    /** Text of each source PDF already read (doc id / file name), so a search runs fast after the first. */
+    private val searchTexts = java.util.concurrent.ConcurrentHashMap<String, Array<PdfSearch.PageText?>>()
+    private val searchLater = Runnable { runSearch() }
+
+    /** A floating bar: the word to find, "3 of 12", previous / next, and close. */
+    private fun buildSearchBar(): View {
+        searchBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(2), dp(4), dp(2))
+            background = glass(20)
+            elevation = dp(6).toFloat()
+            visibility = View.GONE
+        }
+        searchBar.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_search)
+            imageTintList = ColorStateList.valueOf(TEXT_DIM)
+        }, LinearLayout.LayoutParams(dp(16), dp(16)))
+        searchInput = EditText(this).apply {
+            hint = "Search in this document"
+            textSize = 14f
+            setTextColor(TEXT)
+            setHintTextColor(TEXT_DIM)
+            background = null
+            setSingleLine()
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH or
+                android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    // search as you type, a moment after the last key
+                    removeCallbacks(searchLater)
+                    postDelayed(searchLater, 350)
+                }
+            })
+            setOnEditorActionListener { _, _, _ ->
+                removeCallbacks(searchLater)
+                if (searchResults.isNotEmpty() && searchJob?.isActive != true) stepSearch(1) else runSearch()
+                hideKeyboard()
+                true
+            }
+        }
+        searchBar.addView(searchInput, LinearLayout.LayoutParams(dp(190), ViewGroup.LayoutParams.WRAP_CONTENT))
+        searchCount = TextView(this).apply {
+            textSize = 12f
+            setTextColor(TEXT_DIM)
+            minWidth = dp(54)
+            gravity = Gravity.CENTER
+        }
+        searchBar.addView(searchCount)
+        searchBar.addView(barIcon(R.drawable.ic_chevron_up, "Previous") { stepSearch(-1) }, LinearLayout.LayoutParams(dp(34), dp(36)))
+        searchBar.addView(barIcon(R.drawable.ic_chevron_down, "Next") { stepSearch(1) }, LinearLayout.LayoutParams(dp(34), dp(36)))
+        searchBar.addView(barIcon(R.drawable.ic_close, "Close search") { closeSearch() }, LinearLayout.LayoutParams(dp(34), dp(36)))
+        return searchBar
+    }
+
+    private fun toggleSearch() {
+        if (searchBar.visibility == View.VISIBLE) closeSearch() else openSearch()
+    }
+
+    private fun openSearch() {
+        if (active == null) { toast("Open a PDF first"); return }
+        popIn(searchBar)
+        searchInput.requestFocus()
+        searchInput.selectAll()
+        (getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+            ?.showSoftInput(searchInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        if (searchInput.text.isNotBlank()) runSearch()
+    }
+
+    private fun closeSearch() {
+        searchInput.removeCallbacks(searchLater)
+        searchJob?.cancel()
+        hideKeyboard()
+        popOut(searchBar)
+        searchResults = emptyList()
+        searchIdx = -1
+        paneA.setSearchHits(emptyList(), -1)
+        paneB.setSearchHits(emptyList(), -1)
+    }
+
+    private fun hideKeyboard() {
+        (getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+            ?.hideSoftInputFromWindow(searchInput.windowToken, 0)
+        searchInput.clearFocus()
+    }
+
+    /** Looks for the typed word in the active document's text; marks every place and shows the first one from here on. */
+    private fun runSearch() {
+        if (!::searchBar.isInitialized || searchBar.visibility != View.VISIBLE) return
+        val d = active ?: return
+        val view = pdfView
+        val q = searchInput.text.toString().trim()
+        searchJob?.cancel()
+        paneA.setSearchHits(emptyList(), -1)
+        paneB.setSearchHits(emptyList(), -1)
+        if (q.isEmpty()) {
+            searchResults = emptyList(); searchIdx = -1
+            searchCount.text = ""
+            return
+        }
+        searchCount.text = "…"
+        val pages = d.pages.toList()
+        val sources = d.sources.toList()
+        searchJob = lifecycleScope.launch {
+            val hits = withContext(Dispatchers.IO) {
+                val out = ArrayList<PdfSearch.Hit>()
+                for (p in pages) {
+                    if (p.src < 0) continue
+                    val sp = sources.getOrNull(p.file) ?: continue
+                    val key = d.id + "/" + sp.name
+                    val texts = searchTexts[key] ?: try {
+                        PdfSearch.extract(File(d.dir, sp.name), sp.w, sp.h).also { searchTexts[key] = it }
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "search text", t)
+                        null
+                    } ?: continue
+                    val t = texts.getOrNull(p.src) ?: continue
+                    out.addAll(PdfSearch.find(p, t, q))
+                }
+                out
+            }
+            if (active !== d || pdfView !== view) return@launch
+            searchResults = hits
+            // the first place from the page on screen onwards
+            val here = view.currentPageIndex()
+            searchIdx = if (hits.isEmpty()) -1 else hits.indexOfFirst { d.pages.indexOf(it.page) >= here }.let { if (it < 0) 0 else it }
+            view.setSearchHits(hits, searchIdx)
+            if (searchIdx >= 0) view.showSearchHit(searchIdx)
+            updateSearchCount()
+        }
+    }
+
+    /** Previous (−1) or next (+1) place, going round at the ends. */
+    private fun stepSearch(dir: Int) {
+        val n = searchResults.size
+        if (n == 0) return
+        searchIdx = ((searchIdx + dir) % n + n) % n
+        pdfView.showSearchHit(searchIdx)
+        updateSearchCount()
+    }
+
+    private fun updateSearchCount() {
+        val n = searchResults.size
+        searchCount.text = when {
+            n == 0 -> "No matches"
+            else -> "${searchIdx + 1} of $n"
+        }
     }
 
     /**
