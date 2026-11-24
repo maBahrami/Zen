@@ -363,7 +363,7 @@ class MainActivity : ComponentActivity() {
         // (older versions only had left / right)
         v.fastSide = prefs.getInt("fast_side", if (prefs.getBoolean("fast_left", false)) PdfView.FAST_LEFT else PdfView.FAST_RIGHT)
         v.onFastScrollTap = { x, y -> if (v === pdfView) showFastScrollMenu(v, x, y) }
-        v.onZoomLocked = { if (v === pdfView) toast("Zoom is locked · tap the magnifier to unlock") }
+        v.onZoomLocked = { if (v === pdfView) zoomLockedHint() }
         v.onCurrentPage = { i ->
             v.doc?.let { rememberPage(it, i) }
             if (v === pdfView) {
@@ -2059,6 +2059,16 @@ class MainActivity : ComponentActivity() {
         markDirty(d) // remembered with the file's view (not written into saved PDFs)
         updatePageBadge()
         toast(if (on) "Zoom locked" else "Zoom unlocked")
+    }
+
+    private var zoomHintAt = 0L
+
+    /** "Zoom is locked" once, not a queue of the same message after every pinch: again only after 6 s. */
+    private fun zoomLockedHint() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - zoomHintAt < 6000) return
+        zoomHintAt = now
+        toast("Zoom is locked · tap the magnifier to unlock")
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
