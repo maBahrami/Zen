@@ -142,6 +142,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var widthSeek: SeekBar
     private lateinit var widthTrack: WidthTrack
     private lateinit var titleBar: View
+    /** The row of pills inside the floating top bar. */
+    private lateinit var topBarRow: View
+    /** Holder of the floating pen toolbar (sits just below the top bar). */
+    private lateinit var paletteBox: View
+    private var topInsetPx = -1
     private lateinit var titleDivider: View
     private val focusOnlyViews = ArrayList<View>()
     /** Focus mode: 0 = off, 1 = status bar hidden, 2 = status bar, navigation bar and top bar hidden. */
@@ -521,29 +526,34 @@ class MainActivity : ComponentActivity() {
     private fun divider(): View = View(this).apply { setBackgroundColor(SEPARATOR) }
 
     private fun buildUi(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        // the pages fill the window; the top bar floats over them
+        val root = FrameLayout(this).apply {
             setBackgroundColor(BG)
         }
 
-        // ---- title bar: open · tabs · document actions ----
-        val titleBar = LinearLayout(this).apply {
-            this@MainActivity.titleBar = this
+        // ---- top bar (like macOS Preview): groups of buttons in rounded pills, floating over the pages ----
+        val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(2), dp(6), dp(2))
-            // a floating bar with rounded corners, a shade lighter than the window behind it
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(SURFACE)
-                setStroke(1, 0x14FFFFFF)
-            }
+            clipChildren = false
+            clipToPadding = false
         }
-        // Open first, then New note
+        topBarRow = bar
+        fun pill(vararg views: View): LinearLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(3), dp(2), dp(3), dp(2))
+            background = glass(20)
+            elevation = dp(3).toFloat()
+            for ((k, v) in views.withIndex()) addView(v, barLp(if (k == 0) 0 else 2))
+        }
+        fun pillLp(startDp: Int) = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { marginStart = dp(startDp) }
+        // Open and New note
         lateinit var openBtn: ImageView
         openBtn = barIcon(R.drawable.ic_open, "Open") { showOpenMenu(openBtn) }
-        titleBar.addView(openBtn, barLp(0))
-        titleBar.addView(barIcon(R.drawable.ic_new, "New note") { askNewNote() }, barLp())
+        bar.addView(pill(openBtn, barIcon(R.drawable.ic_new, "New note") { askNewNote() }), pillLp(0))
         tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -570,40 +580,42 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
             setOnClickListener { v -> showTabList(v) }
         }
-        // tab counter sits left of the tabs
-        titleBar.addView(tabCount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24)).apply {
-            marginStart = dp(6)
+        // tab counter sits left of the tabs; the tabs themselves stay as they are
+        bar.addView(tabCount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24)).apply {
+            marginStart = dp(10)
         })
-        titleBar.addView(tabScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-            marginStart = dp(6); marginEnd = dp(4)
+        bar.addView(tabScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(6); marginEnd = dp(10)
         })
-        // very dim divider between the tabs and the tools on the right
-        titleBar.addView(View(this).apply { setBackgroundColor(0x26FFFFFF) },
-            LinearLayout.LayoutParams(1, dp(18)).apply { marginStart = dp(2); marginEnd = dp(8) })
         insertBtn = barIcon(R.drawable.ic_plus, "Insert") { showInsertMenu(insertBtn) }
         pagesBtn = barIcon(R.drawable.ic_pages, "Pages") { togglePages() }
         // page tools
-        titleBar.addView(pagesBtn, barLp())
-        titleBar.addView(barIcon(R.drawable.ic_margins, "Margins") { showMargins() }, barLp())
-        titleBar.addView(insertBtn, barLp())
+        bar.addView(pill(pagesBtn, barIcon(R.drawable.ic_margins, "Margins") { showMargins() }, insertBtn), pillLp(0))
+        // file & view
         lateinit var saveBtn: ImageView
         saveBtn = barIcon(R.drawable.ic_save, "Save or export") { showSaveMenu(saveBtn) }
         saveBtnView = saveBtn
-        // file & view (a wider gap separates the groups)
-        titleBar.addView(saveBtn, barLp(10))
-        titleBar.addView(barIcon(R.drawable.ic_share, "Share") { active?.let { share(it) } }, barLp())
         focusBtn = barIcon(R.drawable.ic_focus, "Focus mode") { setFocusLevel(if (focusLevel == 0) 1 else 2) }
-        titleBar.addView(focusBtn, barLp())
-        // light / dark view of the open document, at the far right
+        bar.addView(pill(saveBtn, barIcon(R.drawable.ic_share, "Share") { active?.let { share(it) } }, focusBtn), pillLp(10))
+        // light / dark view of the open document, a round button at the far right
         darkBtn = barIcon(R.drawable.ic_dark, "Dark view (hold for styles)") { toggleDark() }
         darkBtn.setOnLongClickListener { showDarkStyles(darkBtn); true }
-        titleBar.addView(darkBtn, barLp())
-        root.addView(titleBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(dp(6), dp(4), dp(6), dp(4)) // room around it, so its rounded corners show
-        })
-        // (the rounded bar needs no line below it; this only keeps a little space)
+        bar.addView(pill(darkBtn), pillLp(10))
+        // a soft fade from the window colour behind the bar keeps it readable over the pages scrolling underneath;
+        // the area itself takes no touches, so the pages under the fade can still be used
+        val topArea = FrameLayout(this).apply {
+            this@MainActivity.titleBar = this
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xF2000000.toInt(), 0xB3000000.toInt(), 0x00000000))
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(8), dp(6), dp(8), dp(16))
+            addView(bar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        bar.addOnLayoutChangeListener { _, _, _, _, bottom, _, _, _, oldBottom ->
+            if (bottom != oldBottom) bar.post { updateTopInset() }
+        }
         titleDivider = View(this)
-        root.addView(titleDivider, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0))
 
         // ---- canvas with floating tool palette and image bar ----
         val stage = FrameLayout(this)
@@ -725,6 +737,7 @@ class MainActivity : ComponentActivity() {
         focusOnlyViews.addAll(listOf(fDiv, fInsert, fPages, fMargins, fExit))
         for (v in focusOnlyViews) v.visibility = View.GONE
         val paletteScroll = HorizontalScrollView(this).apply {
+            paletteBox = this
             isHorizontalScrollBarEnabled = false
             clipToPadding = false
             setPadding(dp(12), dp(8), dp(12), dp(12)) // room for the shadow
@@ -889,7 +902,8 @@ class MainActivity : ComponentActivity() {
         pagesPanelDivider = divider().apply { visibility = View.GONE }
         body.addView(pagesPanelDivider, LinearLayout.LayoutParams(1, ViewGroup.LayoutParams.MATCH_PARENT))
         body.addView(stage, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(body, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        root.addView(topArea, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
         return root
     }
 
@@ -998,6 +1012,7 @@ class MainActivity : ComponentActivity() {
         val full = focusLevel == 2
         titleBar.visibility = if (full) View.GONE else View.VISIBLE
         titleDivider.visibility = titleBar.visibility
+        updateTopInset()
         for (v in focusOnlyViews) v.visibility = if (full) View.VISIBLE else View.GONE
         // the focus icon shows blue while the first step is on; the next tap hides the top bar too
         focusBtn.imageTintList = ColorStateList.valueOf(if (focusLevel == 1) ACCENT else 0xFFD1D1D6.toInt())
@@ -2881,6 +2896,23 @@ class MainActivity : ComponentActivity() {
      * Animates the next layout change (bars appearing or hiding, panels opening, the two sides moving)
      * instead of jumping. The tab bar and the floating bars place themselves and are left out.
      */
+    /**
+     * The top bar floats over the pages: the pen toolbar and the page list sit just below it, and the
+     * pages start below it (and scroll under it). In full focus mode the bar is hidden and nothing is kept free.
+     */
+    private fun updateTopInset() {
+        if (!::topBarRow.isInitialized) return
+        val h = if (titleBar.visibility == View.VISIBLE && topBarRow.height > 0) topBarRow.bottom else 0
+        if (h == topInsetPx) return
+        topInsetPx = h
+        (paletteBox.layoutParams as? ViewGroup.MarginLayoutParams)?.let { it.topMargin = h; paletteBox.layoutParams = it }
+        for (v in listOf<View>(pagesPanel, pagesPanelDivider)) {
+            (v.layoutParams as? ViewGroup.MarginLayoutParams)?.let { it.topMargin = h; v.layoutParams = it }
+        }
+        paneA.topInset = h.toFloat()
+        paneB.topInset = h.toFloat()
+    }
+
     private fun smoothLayout() {
         val root = findViewById<ViewGroup>(android.R.id.content) ?: return
         if (!root.isLaidOut) return

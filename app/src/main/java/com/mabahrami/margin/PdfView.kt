@@ -458,8 +458,24 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     private val density = resources.displayMetrics.density
     private val edgePx = 16f * density
-    /** Space kept free at the top for the floating tool palette. */
-    private val topPx = 64f * density
+    /** Space kept free at the top for the floating tool palette (plus the floating top bar, see [topInset]). */
+    private val baseTopPx = 64f * density
+    private var topPx = baseTopPx
+
+    /** Height (px) of the bar floating over the top of this view: the pages start below it and scroll under it. */
+    var topInset: Float = 0f
+        set(v) {
+            if (v == field) return
+            val old = topPx
+            field = v
+            topPx = baseTopPx + v
+            val d = doc
+            if (d != null && d.scale > 0f && width > 0) {
+                d.ty += topPx - old
+                clamp(d)
+            }
+            invalidate()
+        }
     private val eraserPx = 14f * density
     private val handlePx = 9f * density
     private val grabPx = 26f * density
