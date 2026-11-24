@@ -750,15 +750,20 @@ class MainActivity : ComponentActivity() {
             for ((k, v) in views.withIndex()) addView(v, palLp(if (k == 0) 0 else 1))
         }
         val pagePill = focusPill(fInsert, fPages, fMargins)
-        val exitPill = focusPill(fExit).apply { setPadding(dp(2), dp(2), dp(2), dp(2)) }
+        val exitPill = focusPill(fExit).apply { setPadding(dp(2), dp(2), dp(2), dp(2)); gravity = Gravity.CENTER }
         val paletteRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             clipChildren = false
             clipToPadding = false
             addView(palette)
-            addView(pagePill, lp(10))
-            addView(exitPill, lp(10))
+            // the extra pills take the pen toolbar's height, so all three are equally thick
+            addView(pagePill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(10) })
+            addView(exitPill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(10) })
+        }
+        // Exit is a circle: as wide as it is tall
+        palette.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) exitPill.post { exitPill.minimumWidth = bottom - top; exitPill.requestLayout() }
         }
         focusOnlyViews.addAll(listOf(pagePill, exitPill))
         for (v in focusOnlyViews) v.visibility = View.GONE
