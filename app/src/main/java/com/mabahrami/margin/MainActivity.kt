@@ -1617,7 +1617,7 @@ class MainActivity : ComponentActivity() {
         val header: String? = null,
         /** Holding the row (e.g. to remove a favourite). */
         val longAction: (() -> Unit)? = null,
-        /** Show only the icon, centred in a bordered button ([label] is its description). */
+        /** A bordered button with [label] in dim text, centred (no icon). */
         val iconOnly: Boolean = false,
         val action: () -> Unit,
     )
@@ -1762,10 +1762,13 @@ class MainActivity : ComponentActivity() {
                         }, rounded(Color.WHITE, 9))
                     isClickable = item.enabled
                     if (item.enabled) setOnClickListener { pop.dismiss(item.action) }
-                    addView(ImageView(this@MainActivity).apply {
-                        setImageResource(item.icon)
-                        imageTintList = ColorStateList.valueOf(0xFFD1D1D6.toInt())
-                    }, FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER))
+                    addView(TextView(this@MainActivity).apply {
+                        text = item.label
+                        textSize = 13f
+                        setTextColor(TEXT_DIM)
+                        maxLines = 1
+                        gravity = Gravity.CENTER
+                    }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
                 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)).apply {
                     topMargin = dp(4); bottomMargin = dp(2); marginStart = dp(8); marginEnd = dp(8)
                 })
@@ -1773,16 +1776,17 @@ class MainActivity : ComponentActivity() {
             }
             box.addView(TextView(this).apply {
                 text = item.label
-                textSize = if (item.primary) 15f else 14f
+                textSize = if (item.primary) 17f else 14f
                 if (item.primary) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setTextColor(if (!item.enabled) TEXT_DIM else if (item.primary) ACCENT else if (item.color != 0) item.color else TEXT)
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.MIDDLE
-                setPadding(dp(14), dp(if (item.primary) 11 else 10), dp(14), dp(if (item.primary) 11 else 10))
+                setPadding(dp(14), dp(if (item.primary) 15 else 10), dp(14), dp(if (item.primary) 15 else 10))
                 if (item.icon != 0) {
                     val ic = androidx.core.content.ContextCompat.getDrawable(this@MainActivity, item.icon)?.mutate()
                     ic?.setTint(if (!item.enabled) TEXT_DIM else if (item.primary) ACCENT else 0xFFD1D1D6.toInt())
-                    ic?.setBounds(0, 0, dp(18), dp(18))
+                    val isz = if (item.primary) dp(22) else dp(18)
+                    ic?.setBounds(0, 0, isz, isz)
                     setCompoundDrawablesRelative(ic, null, null, null)
                     compoundDrawablePadding = dp(10)
                 }
