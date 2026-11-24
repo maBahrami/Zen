@@ -2659,8 +2659,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 downX = e.x; downY = e.y
                 downTime = SystemClock.uptimeMillis()
                 zoomLockHinted = false
+                // S Pen with its button held (or its eraser end): erase, even while the lasso is on
+                val penErase = isPen(e, 0) && ((e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0 ||
+                    e.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER)
                 if (tryGrabFast(d, e.x, e.y)) {
                     // dragging the fast-scroll handle
+                } else if (penErase && (lassoMode || hasLasso)) {
+                    if (hasLasso) clearLasso() // the selected strokes may be erased: drop the selection first
+                    if (selItem != null) clearSelection()
+                    beginPen(d, e, 0)
                 } else if (tryGrabLasso(d, e, 0)) {
                     // moving / scaling the lasso selection
                 } else if (lassoMode && isPen(e, 0)) {
