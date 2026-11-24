@@ -739,22 +739,35 @@ class MainActivity : ComponentActivity() {
         redoBtn = iconButton(R.drawable.ic_redo, "Redo") { pdfView.redo() }
         palette.addView(undoBtn, palLp())
         palette.addView(redoBtn, palLp())
-        // focus mode only: Insert · Pages · Margins, then Exit at the very end
+        // focus mode only, next to the pen toolbar: a pill with Insert · Pages · Margins, then Exit on its own
         val fExit = iconButton(R.drawable.ic_unfocus, "Exit focus mode") { setFocusLevel(0) }
-        val fDiv = divider()
-        palette.addView(fDiv, palDivider())
-        palette.addView(fInsert, palLp())
-        palette.addView(fPages, palLp(1))
-        palette.addView(fMargins, palLp(1))
-        palette.addView(fExit, palLp(1))
-        focusOnlyViews.addAll(listOf(fDiv, fInsert, fPages, fMargins, fExit))
+        fun focusPill(vararg views: View): LinearLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+            background = glass(20)
+            elevation = dp(6).toFloat()
+            for ((k, v) in views.withIndex()) addView(v, palLp(if (k == 0) 0 else 1))
+        }
+        val pagePill = focusPill(fInsert, fPages, fMargins)
+        val exitPill = focusPill(fExit).apply { setPadding(dp(2), dp(2), dp(2), dp(2)) }
+        val paletteRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            addView(palette)
+            addView(pagePill, lp(10))
+            addView(exitPill, lp(10))
+        }
+        focusOnlyViews.addAll(listOf(pagePill, exitPill))
         for (v in focusOnlyViews) v.visibility = View.GONE
         val paletteScroll = HorizontalScrollView(this).apply {
             paletteBox = this
             isHorizontalScrollBarEnabled = false
             clipToPadding = false
             setPadding(dp(12), dp(8), dp(12), dp(12)) // room for the shadow
-            addView(palette)
+            addView(paletteRow)
         }
         stage.addView(paletteScroll, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
