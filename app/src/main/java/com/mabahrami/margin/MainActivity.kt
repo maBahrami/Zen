@@ -88,6 +88,8 @@ class MainActivity : ComponentActivity() {
         private const val SEPARATOR = 0xFF38383A.toInt()
         private const val TEXT = 0xFFFFFFFF.toInt()
         private const val TEXT_DIM = 0xFF8E8E93.toInt()
+        /** Eraser sizes on the slider (radius 4 .. 40 dp). */
+        private const val ERASER_STOPS = 37
         private const val ACCENT = 0xFF0A84FF.toInt()       // systemBlue
 
         /** Widest a popup menu gets (dp); longer names are shortened in the middle. */
@@ -302,6 +304,7 @@ class MainActivity : ComponentActivity() {
         pendingCameraPath = savedInstanceState?.getString("pendingCamera")
         paneA = makePane()
         paneB = makePane()
+        prefs.getFloat("eraser_dp", 14f).coerceIn(4f, 40f).let { paneA.eraserDp = it; paneB.eraserDp = it }
         pdfView = paneA
         splitRatio = prefs.getFloat("split_ratio", 0.5f).coerceIn(0.2f, 0.8f)
         Dark.setStyle(prefs.getInt("dark_style", 0))
@@ -718,7 +721,9 @@ class MainActivity : ComponentActivity() {
             thumbTintList = null
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                    if (fromUser) setWidth(widthAt(p))
+                    if (fromUser) {
+                        if (pdfView.eraserMode) setEraserSize(eraserAt(p)) else setWidth(widthAt(p))
+                    }
                 }
                 override fun onStartTrackingTouch(sb: SeekBar) {}
                 override fun onStopTrackingTouch(sb: SeekBar) {}
@@ -992,10 +997,35 @@ class MainActivity : ComponentActivity() {
                 .translationZ(if (selected) dp(4).toFloat() else 0f)
                 .setDuration(140).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
         }
-        // the slider's filled part takes the current tool's colour (black shows as white on the dark toolbar)
-        widthTrack.color = Dark.ink(pdfView.penColor) or 0xFF000000.toInt()
-        val w = pdfView.penWidth
-        widthLabel.text = if (w % 1f == 0f) "${w.toInt()}" else String.format("%.2f", w).trimEnd('0').trimEnd('.')
+        // with the eraser on, the slider sets the eraser's size (grey); otherwise the pen's or highlighter's
+        // width, its filled part in the tool's colour (black shows as white on the dark toolbar)
+        if (pdfView.eraserMode) {
+            widthTrack.color = 0xFF8E8E93.toInt()
+            if (widthSeek.max != ERASER_STOPS - 1) widthSeek.max = ERASER_STOPS - 1
+            val p = eraserStopOf(pdfView.eraserDp)
+            if (widthSeek.progress != p) widthSeek.progress = p
+            widthLabel.text = "${pdfView.eraserDp.roundToInt()}"
+        } else {
+            widthTrack.color = Dark.ink(pdfView.penColor) or 0xFF000000.toInt()
+            if (widthSeek.max != widthStops() - 1) widthSeek.max = widthStops() - 1
+            val p = stopOf(pdfView.penWidth)
+            if (widthSeek.progress != p) widthSeek.progress = p
+            val w = pdfView.penWidth
+            widthLabel.text = if (w % 1f == 0f) "${w.toInt()}" else String.format("%.2f", w).trimEnd('0').trimEnd('.')
+        }
+        widthTrack.invalidateSelf()
+    }
+
+    // eraser: radius 4 .. 40 dp on screen, 1 dp steps (37 stops)
+    private fun eraserAt(stop: Int) = (4 + stop.coerceIn(0, ERASER_STOPS - 1)).toFloat()
+    private fun eraserStopOf(r: Float) = (r.roundToInt() - 4).coerceIn(0, ERASER_STOPS - 1)
+
+    private fun setEraserSize(r: Float) {
+        val v = r.coerceIn(eraserAt(0), eraserAt(ERASER_STOPS - 1))
+        paneA.eraserDp = v
+        paneB.eraserDp = v
+        prefs.edit().putFloat("eraser_dp", v).apply()
+        refreshTool()
     }
 
     // pen: 0.25 .. 10 pt in 0.25 steps (40 stops); highlighter: 3 .. 50 pt in 1 pt steps (48 stops)
@@ -1026,9 +1056,13 @@ class MainActivity : ComponentActivity() {
     private fun stepWidth(dir: Int) {
         val unit = widthStep()
         val w = pdfView.penWidth
+        if (pdfView.eraserMode) {
+            // with the eraser on, − / + change the eraser's size (2 dp a step)
+            setEraserSize(pdfView.eraserDp + dir * 2f)
+            return
+        }
         val step = if (!hlMode && (w > 3f || (dir < 0 && w > 3.25f))) 0.5f else unit
         val nw = ((w + dir * step) / unit).roundToInt() * unit
-        if (pdfView.eraserMode) setEraser(false)
         setWidth(nw.coerceIn(widthMin(), widthMax()))
     }
 
@@ -1150,19 +1184,25 @@ class MainActivity : ComponentActivity() {
         val colours = ringOrder.map { c ->
             PenWheel.Item(PenWheel.COLOUR, c, null, if (dark && !hlMode) Dark.ink(c) else c, drawing && c == pdfView.penColor)
         }
-        // size: the same stops as the toolbar slider
+        // size: the same stops as the toolbar slider (the eraser's size while the eraser is on)
         val lineColour = (if (dark && !hlMode) Dark.ink(pdfView.penColor) else pdfView.penColor) or opaque
-        val stop = stopOf(pdfView.penWidth)
+        val erasing = pdfView.eraserMode
+        val stop = if (erasing) eraserStopOf(pdfView.eraserDp) else stopOf(pdfView.penWidth)
         val w = PenWheel(this)
-        w.setup(loc[0] + x, loc[1] + y, tools, colours, lineColour, widthStops(), stop,
+        w.setup(loc[0] + x, loc[1] + y, tools, colours, if (erasing) 0xFF8E8E93.toInt() else lineColour,
+            if (erasing) ERASER_STOPS else widthStops(), stop,
             label = { st ->
-                val wd = widthAt(st)
-                (if (wd % 1f == 0f) "${wd.toInt()}" else String.format(java.util.Locale.US, "%.2f", wd).trimEnd('0').trimEnd('.')) + " pt"
+                if (erasing) "${eraserAt(st).toInt()} dp" else {
+                    val wd = widthAt(st)
+                    (if (wd % 1f == 0f) "${wd.toInt()}" else String.format(java.util.Locale.US, "%.2f", wd).trimEnd('0').trimEnd('.')) + " pt"
+                }
             },
-            previewPx = { st -> widthAt(st) * (active?.scale ?: 1f) })
+            previewPx = { st -> if (erasing) eraserAt(st) * 2f * resources.displayMetrics.density else widthAt(st) * (active?.scale ?: 1f) })
         w.onSize = { st ->
-            if (pdfView.eraserMode || pdfView.lassoMode) setTool(hlMode)
-            setWidth(widthAt(st))
+            if (erasing && pdfView.eraserMode) setEraserSize(eraserAt(st)) else {
+                if (pdfView.eraserMode || pdfView.lassoMode) setTool(hlMode)
+                setWidth(widthAt(st))
+            }
         }
         w.canDo = { v ->
             val d = active

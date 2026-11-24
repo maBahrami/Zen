@@ -522,7 +522,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
             invalidate()
         }
-    private val eraserPx = 14f * density
+    /** Eraser radius in dp on screen (set from the size slider while the eraser is on). */
+    var eraserDp = 14f
+    private val eraserPx: Float get() = eraserDp * density
     private val handlePx = 9f * density
     private val grabPx = 26f * density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
