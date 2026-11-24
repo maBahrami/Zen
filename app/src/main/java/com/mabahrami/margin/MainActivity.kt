@@ -1414,6 +1414,8 @@ class MainActivity : ComponentActivity() {
             pdfView.lassoRecolor(c)
             return
         }
+        // the lasso tool on (nothing selected): a colour means "write" — the pen, with its last size
+        if (pdfView.lassoMode) setTool(false)
         pdfView.penColor = c
         pdfView.eraserMode = false
         prefs.edit().putInt(colorKey(), c).apply()
