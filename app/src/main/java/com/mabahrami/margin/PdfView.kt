@@ -385,12 +385,23 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val hit = 20f * density
         val i = pageNear(d, (sy - d.ty) / s)
         if (i !in 0 until d.pageCount) return -1
-        val cy = d.ty + (tops[i] + d.pages[i].h / 2f) * s
         val lx = d.tx + pl(i) * s - sidePlusOff
         val rx = d.tx + (pl(i) + pageFullW(d, i)) * s + sidePlusOff
-        if (hypot(sx - lx, sy - cy) <= hit) return i * 2
-        if (hypot(sx - rx, sy - cy) <= hit) return i * 2 + 1
+        for (f in sidePlusSpots(d, i)) {
+            val cy = d.ty + (tops[i] + d.pages[i].h * f) * s
+            if (hypot(sx - lx, sy - cy) <= hit) return i * 2
+            if (hypot(sx - rx, sy - cy) <= hit) return i * 2 + 1
+        }
         return -1
+    }
+
+    private val oneSpot = floatArrayOf(0.5f)
+    private val twoSpots = floatArrayOf(1f / 3f, 2f / 3f)
+
+    /** Heights (fractions of the page) of the side + signs: two on A4 or larger pages, else one in the middle. */
+    private fun sidePlusSpots(d: Doc, i: Int): FloatArray {
+        val p = d.pages[i]
+        return if (max(p.w, p.h) >= 830) twoSpots else oneSpot // A4 is 595 x 842 pt
     }
 
     /** Draws the + in each visible gap, and beside each visible page (document coordinates). */
@@ -410,11 +421,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         // beside each page, halfway down: tap for the margin settings
         val off = sidePlusOff / s
         for (i in 0 until min(d.pageCount, tops.size)) {
-            val cy = tops[i] + d.pages[i].h / 2f
-            if (cy < visTop - r || cy > visBottom + r) continue
-            for (sx in floatArrayOf(pl(i) - off, pl(i) + pageFullW(d, i) + off)) {
-                canvas.drawLine(sx - arm, cy, sx + arm, cy, gapPlusArm)
-                canvas.drawLine(sx, cy - arm, sx, cy + arm, gapPlusArm)
+            if (tops[i] > visBottom + r || tops[i] + d.pages[i].h < visTop - r) continue
+            val lx = pl(i) - off
+            val rx = pl(i) + pageFullW(d, i) + off
+            for (f in sidePlusSpots(d, i)) {
+                val cy = tops[i] + d.pages[i].h * f
+                for (sx in floatArrayOf(lx, rx)) {
+                    canvas.drawLine(sx - arm, cy, sx + arm, cy, gapPlusArm)
+                    canvas.drawLine(sx, cy - arm, sx, cy + arm, gapPlusArm)
+                }
             }
         }
     }
