@@ -2272,8 +2272,16 @@ class MainActivity : ComponentActivity() {
      * A notice like a toast, but sized to its text (system toasts cut off after two lines): a bold title and
      * a few lines under it, near the bottom of the screen for 5 seconds. Tap to close it early.
      */
-    private fun showNotice(title: String, vararg lines: String?) {
+    /** Takes the notice away now (e.g. "Saving…" when the save didn't happen). */
+    private fun hideNotice() {
+        noticeView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        noticeView = null
+    }
+
+    /** [hold]: stays until replaced or hidden (for "Saving…"), instead of 5 seconds. */
+    private fun showNotice(title: String, vararg lines: String?, hold: Boolean = false) {
         val stage = stageView ?: run { toast(title); return }
+        val replacing = noticeView != null
         noticeView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2313,8 +2321,9 @@ class MainActivity : ComponentActivity() {
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
         ).apply { bottomMargin = dp(72) })
         noticeView = box
-        box.animate().alpha(1f).translationY(0f).setDuration(200).start()
-        box.postDelayed({ if (box.parent != null) hide() }, 5000)
+        if (replacing) { box.alpha = 1f; box.translationY = 0f } // swaps in place, no second pop
+        else box.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        if (!hold) box.postDelayed({ if (box.parent != null) hide() }, 5000)
     }
 
     // ======================= tabs =======================
@@ -4650,7 +4659,8 @@ class MainActivity : ComponentActivity() {
         }
         val versionAtStart = d.version
         d.busy = true
-        toast(if (isSave) "Saving…" else "Exporting…")
+        // saving shows in the notice box, which the "Saved" notice then replaces (one message, not two)
+        if (isSave) showNotice("Saving…", d.name, hold = true) else toast("Exporting…")
         lifecycleScope.launch {
             var retryWithPicker = false
             var closeNow = false
@@ -4703,8 +4713,9 @@ class MainActivity : ComponentActivity() {
                     if (d.originUri == uri.toString()) d.originUri = null
                     markDirty(d)
                     retryWithPicker = true
+                    hideNotice()
                 } else {
-                    if (isSave) closeAfterSave.remove(d.id)
+                    if (isSave) { closeAfterSave.remove(d.id); hideNotice() }
                     toast((if (isSave) "Save" else "Export") + " failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             } finally {
