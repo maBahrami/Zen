@@ -179,9 +179,20 @@ class MainActivity : ComponentActivity() {
     private var pendingInsertId: String? = null
     private var pendingCameraPath: String? = null
 
+    /**
+     * The open tabs have been read back after the app started. Until then, results from the system windows
+     * (a file picked to save into, a photo taken…) wait: after Android closed Zen in the background, they can
+     * arrive before the tab they belong to is open again, and must not be dropped.
+     */
+    private var restored = false
+    private val afterRestore = ArrayList<() -> Unit>()
+    private fun whenRestored(f: () -> Unit) {
+        if (restored) f() else afterRestore.add(f)
+    }
+
     private val openLauncher =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-            if (uris.isNotEmpty()) importAll(uris, fromPicker = true)
+            if (uris.isNotEmpty()) whenRestored { importAll(uris, fromPicker = true) }
         }
 
     /** The file picker for PDFs, starting in a given folder (a favourite). */
@@ -210,7 +221,7 @@ class MainActivity : ComponentActivity() {
 
     private val openInFolderLauncher =
         registerForActivityResult(OpenPdfsIn()) { uris ->
-            if (uris.isNotEmpty()) importAll(uris, fromPicker = true)
+            if (uris.isNotEmpty()) whenRestored { importAll(uris, fromPicker = true) }
         }
 
     /** Picks a folder to add to the favourites. */
@@ -237,24 +248,24 @@ class MainActivity : ComponentActivity() {
     }
 
     private val saveLauncher =
-        registerForActivityResult(CreatePdfAt()) { uri ->
+        registerForActivityResult(CreatePdfAt()) { uri -> whenRestored {
             val d = docs.firstOrNull { it.id == pendingSaveId }
             pendingSaveId = null
             if (uri != null && d != null) {
                 keepWriteAccess(uri)
                 writeDoc(d, uri, isSave = true, fromPicker = true)
             } else if (d != null) closeAfterSave.remove(d.id) // no place chosen: the tab stays open
-        }
+        } }
 
     private val pickImageLauncher =
-        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> whenRestored {
             val d = docs.firstOrNull { it.id == pendingInsertId }
             pendingInsertId = null
             if (uri != null && d != null) insertImage(d, { contentResolver.openInputStream(uri) }, cropAfter = false)
-        }
+        } }
 
     private val takePhotoLauncher =
-        registerForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        registerForActivityResult(ActivityResultContracts.TakePicture()) { ok -> whenRestored {
             val d = docs.firstOrNull { it.id == pendingInsertId }
             val path = pendingCameraPath
             pendingInsertId = null
@@ -265,17 +276,17 @@ class MainActivity : ComponentActivity() {
             } else if (path != null) {
                 File(path).delete()
             }
-        }
+        } }
 
     private val pickPdfLauncher =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> whenRestored {
             val d = docs.firstOrNull { it.id == pendingInsertId }
             pendingInsertId = null
             if (uri != null && d != null) insertPdf(d, uri)
-        }
+        } }
 
     private val exportLauncher =
-        registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri -> whenRestored {
             val d = docs.firstOrNull { it.id == pendingExportId }
             pendingExportId = null
             val only = pendingExportPages
@@ -287,7 +298,7 @@ class MainActivity : ComponentActivity() {
                 if (lost) toast("The page selection was lost · select the pages and export again")
                 else writeDoc(d, uri, isSave = false, fromPicker = true, only = only)
             }
-        }
+        } }
 
     // ======================= lifecycle =======================
 
@@ -410,7 +421,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntent(intent)
+        whenRestored { handleIntent(intent) } // a file opened from another app while the tabs are still loading
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -2520,6 +2531,9 @@ class MainActivity : ComponentActivity() {
         rebuildTabs()
         updateButtons()
         saveSession()
+        // the search and the "changed elsewhere" check follow the active side
+        if (::searchBar.isInitialized && searchBar.visibility == View.VISIBLE) runSearch()
+        checkChangedElsewhere(d)
     }
 
     private fun applySplitLayout() {
@@ -4140,6 +4154,10 @@ class MainActivity : ComponentActivity() {
                 activate(it)
             }
             startIntent?.let { handleIntent(it) }
+            restored = true
+            val waiting = ArrayList(afterRestore)
+            afterRestore.clear()
+            for (f in waiting) f()
         }
     }
 
@@ -5251,7 +5269,7 @@ class MainActivity : ComponentActivity() {
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 Log.e(TAG, "insert pdf", t)
-                withContext(Dispatchers.IO) { file.delete() }
+                withContext(Dispatchers.IO) { file.delete(); File(d.dir, "$name.tmp").delete() }
                 toast("Couldn't insert the PDF: ${t.message ?: t.javaClass.simpleName}")
             }
         }
@@ -5259,8 +5277,7 @@ class MainActivity : ComponentActivity() {
 
     private val selRect = FloatArray(4)
 
-    /** Keeps the image bar next to the selected image: below it, or above if there's no room. */
-    /** Puts a floating bar just below a rect (or above it if there's no room), kept on screen. */
+    /** Puts a floating bar just above a rect (or below it if there's no room), kept on screen. */
     private fun placeBar(bar: View, l: Float, t: Float, r: Float, b: Float) {
         val bw = bar.width
         val bh = bar.height
