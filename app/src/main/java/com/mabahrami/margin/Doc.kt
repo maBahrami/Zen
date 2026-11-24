@@ -398,6 +398,13 @@ class Doc(
     var saveUri: String? = null
     /** The file this tab was opened from (for "Save in place"), if known. */
     var originUri: String? = null
+    /**
+     * Size and last change ("size;time") of [originUri] when Zen last read or wrote it, to notice when the file
+     * was changed somewhere else (e.g. on a laptop through Drive). Null if its storage doesn't tell.
+     */
+    var originStamp: String? = null
+    /** A change elsewhere the user was already asked about (not saved). */
+    var stampAsked: String? = null
 
     /** Size and paper of the blank page added most recently (w, h, paper), or null if none was added yet. */
     var lastAdded: IntArray? = null

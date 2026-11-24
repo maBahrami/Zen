@@ -165,6 +165,7 @@ object Store {
         val marginL: Float, val marginR: Float, val marginPaper: Int,
         val scale: Float, val tx: Float, val ty: Float, val unsaved: Boolean, val lastAdded: IntArray?,
         val sources: List<String>, val pages: List<PageSnap>,
+        val originStamp: String = "",
     ) {
         fun toJson(): String = write(this)
     }
@@ -180,6 +181,7 @@ object Store {
         unsaved = d.unsaved,
         lastAdded = d.lastAdded?.copyOf(),
         sources = d.sources.map { it.name },
+        originStamp = if (withView) d.originStamp ?: "" else "",
         pages = d.pages.map { p ->
             PageSnap(
                 p.file, p.src, p.w, p.h, p.paper, p.mL, p.mR, p.mPaper,
@@ -198,6 +200,7 @@ object Store {
         if (d.zoomLocked) sb.append(",\"zl\":true")
         sb.append(",\"save\":").append(JSONObject.quote(d.save))
         sb.append(",\"origin\":").append(JSONObject.quote(d.origin))
+        if (d.originStamp.isNotEmpty()) sb.append(",\"os\":").append(JSONObject.quote(d.originStamp))
         sb.append(",\"mL\":"); num(sb, d.marginL)
         sb.append(",\"mR\":"); num(sb, d.marginR)
         sb.append(",\"mp\":").append(d.marginPaper)
@@ -343,8 +346,10 @@ object Store {
         val dark: Boolean = false,
         val lastAdded: IntArray? = null,
         val zoomLocked: Boolean = false,
+        val originStamp: String? = null,
     ) {
         fun applyTo(d: Doc) {
+            d.originStamp = originStamp
             d.dark = dark
             d.zoomLocked = zoomLocked
             d.lastAdded = lastAdded
@@ -433,6 +438,7 @@ object Store {
             pages = pages,
             dark = o.optBoolean("dark", false),
             zoomLocked = o.optBoolean("zl", false),
+            originStamp = o.optString("os").takeIf { it.isNotEmpty() },
             lastAdded = o.optJSONArray("la")?.let { a ->
                 if (a.length() != 3) null
                 else intArrayOf(

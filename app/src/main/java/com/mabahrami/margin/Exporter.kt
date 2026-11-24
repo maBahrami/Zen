@@ -158,11 +158,20 @@ object Exporter {
     }
 
     /** Builds the PDF and writes it to a content Uri. */
-    fun writeTo(ctx: Context, job: Job, uri: Uri) {
+    /** [keepCopy]: also leave a copy of what was written there (Zen's local copy of a cloud file). */
+    fun writeTo(ctx: Context, job: Job, uri: Uri, keepCopy: File? = null) {
         val tmp = File(ctx.cacheDir, "out_${System.nanoTime()}.pdf")
         try {
             build(job, tmp)
             openOut(ctx, uri).use { out -> tmp.inputStream().use { it.copyTo(out) } }
+            if (keepCopy != null) {
+                try {
+                    keepCopy.parentFile?.mkdirs()
+                    tmp.copyTo(keepCopy, overwrite = true)
+                } catch (e: Exception) {
+                    keepCopy.delete() // only a speed-up: never a half copy
+                }
+            }
         } finally {
             tmp.delete()
         }

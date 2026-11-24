@@ -1128,6 +1128,72 @@ class MainActivity : ComponentActivity() {
         if (hasFocus && focusLevel > 0) setFocusLevel(focusLevel)
         // Android lets an app read the clipboard only while it has the focus: catch what came in meanwhile
         if (hasFocus) recordClipboardImage()
+        // back in Zen: the file on screen may have been changed elsewhere meanwhile
+        if (hasFocus) active?.let { checkChangedElsewhere(it) }
+    }
+
+    // ---------------- the file changed elsewhere (a laptop, another app) ----------------
+
+    /**
+     * Whether the file changed between two stamps ("size;time"). A new size always counts. The same size counts
+     * only if the time moved by more than 2 minutes: cloud apps like Drive restamp a file a little after an
+     * upload finishes, and that alone must not look like a change made elsewhere.
+     */
+    private fun stampChanged(old: String?, now: String?): Boolean {
+        if (old == null || now == null || old == now) return false
+        val a = old.split(';'); val b = now.split(';')
+        if (a.size != 2 || b.size != 2) return true
+        if (a[0] != b[0]) return true
+        val ta = a[1].toLongOrNull() ?: return true
+        val tb = b[1].toLongOrNull() ?: return true
+        return kotlin.math.abs(tb - ta) > 2 * 60_000L
+    }
+
+    /** Asks the file's storage whether it changed since Zen read or wrote it; if so (and not asked yet), asks what to do. */
+    private fun checkChangedElsewhere(d: Doc) {
+        val uri = d.originUri?.let { Uri.parse(it) } ?: return
+        val known = d.originStamp ?: return
+        if (d.busy || d.closed) return
+        lifecycleScope.launch {
+            val now = withContext(Dispatchers.IO) { remoteStamp(uri) } ?: return@launch
+            if (!stampChanged(known, now) || now == d.stampAsked || d.closed || active !== d || d.busy) return@launch
+            askChangedElsewhere(d, now, saving = null)
+        }
+    }
+
+    /**
+     * “name” changed elsewhere: load the new version (this tab goes to Recently closed, so nothing is lost), or
+     * keep working on this one. When it comes up while saving ([saving] != null), the choice is to replace it.
+     */
+    private fun askChangedElsewhere(d: Doc, now: String, saving: (() -> Unit)?) {
+        d.stampAsked = now
+        hideNotice()
+        val b = ZenBuilder()
+            .setTitle("“${baseName(d.name)}” was changed elsewhere")
+            .setMessage(
+                (if (saving != null) "Since Zen opened it, the file was changed somewhere else (for example on your laptop). " +
+                    "Saving now replaces that newer version with this one."
+                else "Since Zen opened it, the file was changed somewhere else (for example on your laptop).") +
+                    (if (d.unsaved) " This tab also has changes that aren't saved." else "") +
+                    "\n\nLoading the new version moves this tab to Recently closed, so it can still be reopened."
+            )
+            .setPositiveButton("Load new version") { _, _ -> closeAfterSave.remove(d.id); reloadFromOrigin(d) }
+        if (saving != null) {
+            b.setNeutralButton("Replace it") { _, _ -> saving() }
+            b.setNegativeButton("Cancel") { _, _ -> closeAfterSave.remove(d.id) }
+        } else {
+            b.setNegativeButton("Keep this version", null)
+        }
+        val dlg = compactShow(b.create(), 380)
+        if (saving != null) dlg.getButton(AlertDialog.BUTTON_NEUTRAL)?.setTextColor(0xFFFF453A.toInt())
+    }
+
+    /** Opens the file again from where it came from; the current tab goes to Recently closed. */
+    private fun reloadFromOrigin(d: Doc) {
+        val uri = d.originUri?.let { Uri.parse(it) } ?: return
+        if (d.busy || d.closed) return
+        closeDoc(d)
+        importAll(listOf(uri), fromPicker = true)
     }
 
     // ---------------- recent clipboard images ----------------
@@ -2355,6 +2421,7 @@ class MainActivity : ComponentActivity() {
         updateButtons()
         saveSession()
         if (active !== before && ::searchBar.isInitialized && searchBar.visibility == View.VISIBLE) runSearch()
+        if (active !== before) active?.let { checkChangedElsewhere(it) }
     }
 
     // ======================= side by side =======================
@@ -4336,6 +4403,7 @@ class MainActivity : ComponentActivity() {
             name = withContext(Dispatchers.IO) { queryName(uri) } ?: name
             val remote = !isLocalUri(uri)
             showLoading(name, remote)
+            val openStamp = withContext(Dispatchers.IO) { remoteStamp(uri) }
             val editable = withContext(Dispatchers.IO) {
                 dir.mkdirs()
                 val tmp = File(dir, "source.pdf.tmp")
@@ -4345,7 +4413,7 @@ class MainActivity : ComponentActivity() {
                 val cached = key?.let { File(remoteCacheDir(), "$it.pdf") }
                 val meta = key?.let { File(remoteCacheDir(), "$it.meta") }
                 if (stamp != null && cached != null && meta != null && cached.exists() && meta.exists() &&
-                    meta.readText() == stamp) {
+                    !stampChanged(meta.readText(), stamp)) {
                     cached.setLastModified(System.currentTimeMillis())
                     cached.copyTo(tmp, overwrite = true)
                 } else {
@@ -4403,6 +4471,7 @@ class MainActivity : ComponentActivity() {
             // remember where the file came from, so "Save in place" can write back to it
             if (fromPicker) keepWriteAccess(uri)
             d.originUri = uri.toString()
+            d.originStamp = openStamp
             d.saveUri = if (editable && fromPicker) uri.toString() else null
             val resume = lastPageOf(d) // before the new tab starts recording its own page
             if (resume > 0) openedAt[d.id] = android.os.SystemClock.uptimeMillis()
@@ -4859,8 +4928,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun writeDoc(d: Doc, uri: Uri, isSave: Boolean, fromPicker: Boolean, renameTo: String? = null, only: List<Page>? = null) {
+    private fun writeDoc(
+        d: Doc, uri: Uri, isSave: Boolean, fromPicker: Boolean, renameTo: String? = null, only: List<Page>? = null,
+        /** Save even if the file was changed elsewhere since Zen read it (the user said so). */
+        force: Boolean = false,
+    ) {
         if (d.busy || d.closed) return
+        // saving over the file this tab came from: first make sure nobody changed it meanwhile (a laptop, Drive)
+        if (isSave && !fromPicker && !force && d.originStamp != null && uri.toString() == d.originUri) {
+            d.busy = true
+            lifecycleScope.launch {
+                val now = withContext(Dispatchers.IO) { remoteStamp(uri) }
+                d.busy = false
+                if (d.closed) return@launch
+                if (now != null && stampChanged(d.originStamp, now)) askChangedElsewhere(d, now, saving = { writeDoc(d, uri, true, false, renameTo, only, force = true) })
+                else writeDoc(d, uri, true, false, renameTo, only, force = true)
+            }
+            return
+        }
         val full = Exporter.snapshot(d, withEditData = isSave)
         val job = if (only == null || isSave) full else {
             // export just the chosen pages, in document order
@@ -4880,7 +4965,12 @@ class MainActivity : ComponentActivity() {
             var retryWithPicker = false
             var closeNow = false
             try {
-                withContext(Dispatchers.IO) { Exporter.writeTo(applicationContext, job, uri) }
+                // writing to a cloud file: Zen's local copy is refreshed too, so reopening it needs no download
+                val copy = if (isSave && !isLocalUri(uri)) File(remoteCacheDir(), remoteKey(uri) + ".pdf") else null
+                withContext(Dispatchers.IO) {
+                    File(remoteCacheDir(), remoteKey(uri) + ".meta").delete() // stale until written below
+                    Exporter.writeTo(applicationContext, job, uri, keepCopy = copy)
+                }
                 if (isSave) {
                     var finalUri = uri
                     var renameFailed = false
@@ -4903,6 +4993,19 @@ class MainActivity : ComponentActivity() {
                     }
                     d.saveUri = finalUri.toString()
                     d.originUri = finalUri.toString()
+                    // what the file looks like now that Zen wrote it (so this isn't taken for a change elsewhere)
+                    val stamp = withContext(Dispatchers.IO) { remoteStamp(finalUri) }
+                    d.originStamp = stamp
+                    d.stampAsked = null
+                    if (copy != null) withContext(Dispatchers.IO) {
+                        try {
+                            if (stamp != null && finalUri == uri && copy.exists()) {
+                                File(remoteCacheDir(), remoteKey(uri) + ".meta").writeText(stamp)
+                                pruneRemoteCache()
+                            } else copy.delete()
+                        } catch (e: Exception) {
+                        }
+                    }
                     if (d.version == versionAtStart) d.unsaved = false
                     markDirty(d)
                     rebuildTabs()
