@@ -1079,6 +1079,10 @@ class MainActivity : ComponentActivity() {
         titleBar.visibility = if (full) View.GONE else View.VISIBLE
         titleDivider.visibility = titleBar.visibility
         updateTopInset()
+        // status bar hidden: a finger swipe from the top edge shows the clock and battery without moving the pages
+        val dead = if (focusLevel >= 1) dp(36).toFloat() else 0f
+        paneA.topDeadZonePx = dead
+        paneB.topDeadZonePx = dead
         for (v in focusOnlyViews) v.visibility = if (full) View.VISIBLE else View.GONE
         // the focus icon shows blue while the first step is on; the next tap hides the top bar too
         focusBtn.imageTintList = ColorStateList.valueOf(if (focusLevel == 1) ACCENT else 0xFFD1D1D6.toInt())

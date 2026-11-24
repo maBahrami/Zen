@@ -2738,7 +2738,22 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return handled
     }
 
+    /**
+     * A strip at the top of the screen (px, from the screen's top edge) where a finger does nothing: in full
+     * screen, swiping down there brings back the clock and battery without moving the pages. 0 = off.
+     */
+    var topDeadZonePx = 0f
+    /** This finger gesture started in [topDeadZonePx]: it's ignored until all fingers are up. */
+    private var ignoringGesture = false
+
     private fun handleTouch(e: MotionEvent): Boolean {
+        if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+            ignoringGesture = topDeadZonePx > 0f && !isPen(e, 0) && e.rawY < topDeadZonePx
+        }
+        if (ignoringGesture) {
+            if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) ignoringGesture = false
+            return true
+        }
         if (e.actionMasked == MotionEvent.ACTION_DOWN) onTouchStart?.invoke(this)
         val d = doc ?: return true
         if (d.scale <= 0f) return true
