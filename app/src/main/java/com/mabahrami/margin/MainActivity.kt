@@ -309,6 +309,11 @@ class MainActivity : ComponentActivity() {
         splitRatio = prefs.getFloat("split_ratio", 0.5f).coerceIn(0.2f, 0.8f)
         Dark.setStyle(prefs.getInt("dark_style", 0))
         setContentView(buildUi())
+        // keep the last few images that pass through the clipboard (screenshots from the Mac and others)
+        try {
+            getSystemService(ClipboardManager::class.java)?.addPrimaryClipChangedListener(clipListener)
+        } catch (e: Exception) {
+        }
         loadTool()
         // "focus" (on/off) is the setting from v1.0: on meant everything hidden
         val savedFocus = prefs.getInt("focus_level", if (prefs.getBoolean("focus", false)) 2 else 0)
@@ -443,6 +448,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            getSystemService(ClipboardManager::class.java)?.removePrimaryClipChangedListener(clipListener)
+        } catch (e: Exception) {
+        }
         main.removeCallbacks(flushRunnable)
         val all = ArrayList(docs)
         paneA.release()
@@ -1112,6 +1121,83 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         // bars can come back after dialogs or app switches: hide them again
         if (hasFocus && focusLevel > 0) setFocusLevel(focusLevel)
+        // Android lets an app read the clipboard only while it has the focus: catch what came in meanwhile
+        if (hasFocus) recordClipboardImage()
+    }
+
+    // ---------------- recent clipboard images ----------------
+
+    /** How many recent clipboard images are kept. */
+    private val clipHistoryMax = 5
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { recordClipboardImage() }
+    /** The clipboard item last looked at (its time stamp), so the same one isn't read again on every focus. */
+    private var lastClipStamp = -1L
+
+    private fun clipHistoryDir() = File(filesDir, "clip_history")
+
+    /** The kept images, newest first. */
+    private fun clipHistory(): List<File> =
+        (clipHistoryDir().listFiles()?.filter { it.isFile && it.name.endsWith(".img") } ?: emptyList())
+            .sortedByDescending { it.lastModified() }
+
+    /**
+     * An image on Android's clipboard that didn't come from Zen: a copy is kept (the newest [clipHistoryMax]),
+     * so earlier screenshots can still be pasted after newer ones replaced them on the clipboard.
+     */
+    private fun recordClipboardImage() {
+        val uri = clipboardImageUri() ?: return
+        if (uri.authority == "$packageName.files") return // Zen's own copies
+        val stamp = try {
+            getSystemService(ClipboardManager::class.java)?.primaryClipDescription?.timestamp ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+        if (stamp != 0L && stamp == lastClipStamp) return
+        lastClipStamp = stamp
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { inp ->
+                    val buf = java.io.ByteArrayOutputStream()
+                    val chunk = ByteArray(64 * 1024)
+                    var total = 0
+                    while (true) {
+                        val n = inp.read(chunk)
+                        if (n < 0) break
+                        total += n
+                        if (total > 40 * 1024 * 1024) return@launch // too big to keep
+                        buf.write(chunk, 0, n)
+                    }
+                    buf.toByteArray()
+                } ?: return@launch
+                if (bytes.isEmpty()) return@launch
+                val md5 = java.security.MessageDigest.getInstance("MD5").digest(bytes)
+                    .joinToString("") { "%02x".format(it) }
+                val dir = clipHistoryDir().apply { mkdirs() }
+                val f = File(dir, "$md5.img")
+                if (f.exists()) {
+                    f.setLastModified(System.currentTimeMillis()) // seen again: newest
+                } else {
+                    val tmp = File(dir, "$md5.tmp")
+                    tmp.writeBytes(bytes)
+                    if (!tmp.renameTo(f)) tmp.delete()
+                }
+                // only the newest few stay
+                for (old in clipHistory().drop(clipHistoryMax)) old.delete()
+            } catch (t: Throwable) {
+                Log.w(TAG, "clipboard history", t)
+            }
+        }
+    }
+
+    /** A small picture of an image file (decoded at a reduced size). */
+    private fun decodeFileThumb(f: File, maxSide: Int): android.graphics.Bitmap? = try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(f.path, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
+        android.graphics.BitmapFactory.decodeFile(f.path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+    } catch (t: Throwable) {
+        null
     }
 
     /** Light / dark view of the open document. Display only: saved and exported files keep the original colours. */
@@ -5057,13 +5143,56 @@ class MainActivity : ComponentActivity() {
                     gravity = Gravity.CENTER
                 })
             }
+            // recent clipboard images (newest first): tap one to paste it here
+            recordClipboardImage()
+            val recent = withContext(Dispatchers.IO) {
+                clipHistory().mapNotNull { f -> decodeFileThumb(f, dp(120))?.let { f to it } }
+            }
+            lateinit var dlg: AlertDialog
+            if (recent.isNotEmpty()) {
+                box.addView(TextView(this@MainActivity).apply {
+                    text = "RECENT · tap one to paste it"
+                    textSize = 11f
+                    setTextColor(TEXT_DIM)
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setPadding(0, dp(6), 0, dp(6))
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                val strip = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                for ((f, bmp) in recent) {
+                    strip.addView(ImageView(this@MainActivity).apply {
+                        setImageBitmap(bmp)
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        background = rounded(0xFF2C2C2E.toInt(), 6)
+                        clipToOutline = true
+                        foreground = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 6))
+                        isClickable = true
+                        contentDescription = "Paste this image"
+                        setOnClickListener {
+                            closeDialog(dlg) {
+                                dlg.cancel()
+                                if (active === d && f.exists()) {
+                                    pendingPlace = pt
+                                    insertImage(d, { f.inputStream() }, cropAfter = false)
+                                }
+                            }
+                        }
+                    }, LinearLayout.LayoutParams(dp(58), dp(58)).apply { marginEnd = dp(6) })
+                }
+                box.addView(HorizontalScrollView(this@MainActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(strip)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(6)
+                })
+            }
             // (with a preview, the preview speaks for itself)
             val b = ZenBuilder().setTitle("Clipboard").setView(box)
             if (canPaste()) b.setPositiveButton("Paste here") { _, _ ->
                 if (active === d) { pendingPlace = pt; paste(d) }
             }
             b.setNegativeButton("Close", null)
-            compactShow(b.create(), 380)
+            dlg = b.create()
+            compactShow(dlg, 380)
         }
     }
 
