@@ -1880,18 +1880,27 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             canvas.translate(0f, -pullOff * pullDir)
         }
 
+        // which pages are on screen, known before any render is asked for (the render queue keeps only
+        // jobs for these and their neighbours, so it must never see the previous file's or position's range)
+        var vf = -1
+        var vl = -1
+        for (i in 0 until d.pageCount) {
+            val top = tops[i]
+            if (top + d.pages[i].h < visTop || top > visBottom) continue
+            if (vf < 0) vf = i
+            vl = i
+        }
+        visDoc = d
+        if (vf >= 0) { visFirst = vf; visLast = vl } else { visFirst = 0; visLast = -1 }
+
         canvas.save()
         canvas.translate(d.tx, d.ty)
         canvas.scale(s, s)
-        var vf = -1
-        var vl = -1
         for (i in 0 until d.pageCount) {
             val page = d.pages[i]
             val top = tops[i]
             val bottom = top + page.h
             if (bottom < visTop || top > visBottom) continue
-            if (vf < 0) vf = i
-            vl = i
             val left = pl(i)
             val right = left + pageFullW(d, i)
             if (shadowForScale != s) {
@@ -2023,8 +2032,6 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             }
             canvas.restore()
         }
-        visDoc = d
-        if (vf >= 0) { visFirst = vf; visLast = vl }
         prefetchAround(d, s)
         drawGapPluses(d, canvas, s, visTop, visBottom)
         drawSearchHits(d, canvas, s, visTop, visBottom)
@@ -2332,7 +2339,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val ph = page.h
         val at = d.pages.indexOf(page)
         try {
-            enqueueRender(key, d, at, onDrop = { if (gen == generation) pending.remove(key) }) {
+            enqueueRender(key, d, at, onDrop = {
+                if (gen == generation) pending.remove(key)
+                invalidate() // if the page is still wanted, the next frame asks for it again
+            }) {
                 val bmp = renderPage(d, file, src, w, h)
                 if (bmp != null && dark) {
                     try {
