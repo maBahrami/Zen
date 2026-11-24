@@ -2861,17 +2861,37 @@ class MainActivity : ComponentActivity() {
             }
             uri.authority == "com.android.providers.downloads.documents" ->
                 (if (docId.startsWith("raw:")) fromPath(docId.removePrefix("raw:")) else null) ?: "Downloads"
-            else -> favoriteFolders().firstOrNull { (tree, _) ->
-                try {
-                    val t = Uri.parse(tree)
-                    t.authority == uri.authority && docId.startsWith(DocumentsContract.getTreeDocumentId(t).trimEnd('/') + "/")
-                } catch (e: Exception) {
-                    false
+            else -> {
+                // no path: name the storage app (like "Google Drive"), with the favourite folder if it's in one
+                val app = storageAppName(uri.authority)
+                val fav = favoriteFolders().firstOrNull { (tree, _) ->
+                    try {
+                        val t = Uri.parse(tree)
+                        t.authority == uri.authority && docId.startsWith(DocumentsContract.getTreeDocumentId(t).trimEnd('/') + "/")
+                    } catch (e: Exception) {
+                        false
+                    }
+                }?.second
+                when {
+                    app != null && fav != null && fav != app -> "$app/$fav"
+                    else -> app ?: fav
                 }
-            }?.second
+            }
         }
     } catch (e: Exception) {
         null
+    }
+
+    /** Name of the app behind a storage location (like "Google Drive"), or null. */
+    private fun storageAppName(authority: String?): String? {
+        if (authority == null) return null
+        if (authority.startsWith("com.google.android.apps.docs")) return "Google Drive"
+        return try {
+            val info = packageManager.resolveContentProvider(authority, 0) ?: return null
+            info.applicationInfo.loadLabel(packageManager).toString().ifEmpty { null }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** Favourite folders (tree uri, name), in the order they were added. */
