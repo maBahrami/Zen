@@ -27,30 +27,32 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Round pen menu that opens around the S Pen tip: the tools on an inner ring, the colours on a middle
- * ring, and the line size as a curved slider across the top (thin on the left, thick on the right).
- * The centre shows the current line: its colour and its size (and its width in points while dragging).
- * It grows and turns out of the tip and shrinks back into it. Fills the screen (in a popup), so a tap
- * anywhere else closes it. Picking a tool or colour closes it; dragging the size keeps it open.
+ * The S Pen menu, after the Apple Pencil Pro squeeze palette: a ring of round frosted buttons around the pen
+ * tip (pen, highlighter, eraser, lasso, camera, redo, undo, and the current colour). Tapping the colour button
+ * turns the ring into colour dots (with a back button where the colour button was); picking one closes the
+ * menu. The line size is a thin arc over the ring, with − and + at its ends. Buttons fly out of the tip one
+ * after another and back into it on closing. Fills the screen (in a popup), so a tap anywhere else closes it.
  */
 @SuppressLint("ViewConstructor")
 class PenWheel(context: Context) : View(context) {
 
-    /** [kind]: TOOL or COLOUR; [value]: tool number or colour; [tint]: icon tint or swatch colour. */
+    /** [kind]: TOOL, ACTION or COLOUR; [value]: tool number, action or colour; [tint]: icon tint or colour. */
     class Item(val kind: Int, val value: Int, val icon: Drawable?, val tint: Int, val selected: Boolean)
 
     companion object {
         const val TOOL = 0
         const val COLOUR = 1
-        /** Undo (value 0) on the left and redo (value 1) on the right (they keep the wheel open); camera (2) in the centre. */
+        /** Undo (0) and redo (1) keep the menu open; camera (2) closes it. */
         const val ACTION = 2
+        /** The colour button in the ring (opens the colours) and the back button among the colours. */
+        private const val COLOUR_BUTTON = 10
+        private const val BACK = 11
         private const val ACCENT = 0xFF0A84FF.toInt()
         /** The size slider's arc over the top (degrees; 0 = right, clockwise on screen). */
-        private const val ARC_START = -155.0
-        private const val ARC_SPAN = 130.0
-        /** Size steps (− and +) just past each end of the slider (degrees). */
-        private const val STEP_GAP = 18.0
-        private const val TOOL_START = -PI * 3 / 4
+        private const val ARC_START = -145.0
+        private const val ARC_SPAN = 110.0
+        /** − and + just past each end of the slider (degrees). */
+        private const val STEP_GAP = 13.0
     }
 
     var onPick: ((Item) -> Unit)? = null
@@ -65,26 +67,22 @@ class PenWheel(context: Context) : View(context) {
     private fun dp(v: Float) = v * density
 
     // geometry
-    private val toolR = dp(110f)       // the tools sit around the colour disc, under the slider
-    private val toolSize = dp(19f)     // larger buttons: easier to tap
-    private val stepSize = dp(19f)     // the − / + buttons at the ends of the size slider (as big as the tools)
-    private val stepR = dp(102f)       // a little outside the slider, clear of the colour ring
-    private val segIn = dp(38f)        // the colour ring, empty in the middle: segments from here...
-    private val segOut = dp(80f)       // ...out to here
-    private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
-    private val arcR = dp(97f)
-    private val ringOut = dp(86f)
-    private val arcOut = dp(110f)
-    private val segPath = Path()
+    private val ringR = dp(76f)        // centres of the buttons
+    private val btnR = dp(22f)         // button radius
+    private val dotR = dp(17f)         // colour dot radius
+    private val arcR = dp(122f)        // size slider
+    private val stepR = dp(122f)
+    private val stepSize = dp(15f)
+    private val arcOut = dp(134f)
 
-    private var tools: List<Item> = emptyList()
-    private var actions: List<Item> = emptyList()
-    private var colours: List<Item> = emptyList()
+    /** The ring: tools, then camera, redo, undo, then the colour button (clockwise from the top). */
+    private var slots: List<Item> = emptyList()
+    /** The colours, with a back button in the colour button's place. */
+    private var colourSlots: List<Item> = emptyList()
     private var lineColour = Color.WHITE
     private var steps = 40
     private var stop = 0
     private var label: (Int) -> String = { "" }
-    /** Line width on screen (px) at each stop, for the preview in the middle. */
     private var previewPx: (Int) -> Float = { dp(2f) }
 
     private var screenX = 0f
@@ -92,12 +90,15 @@ class PenWheel(context: Context) : View(context) {
     private var cx = 0f
     private var cy = 0f
     private var progress = 0f
+    /** 0 = the tools ring, 1 = the colours ring (animated in between). */
+    private var colourMode = 0f
+    private var colourTarget = 0f
     private var pressed: Item? = null
     private var dragging = false
     private var closing = false
     private var anim: ValueAnimator? = null
+    private var modeAnim: ValueAnimator? = null
 
-    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val shine = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -109,6 +110,7 @@ class PenWheel(context: Context) : View(context) {
     }
     private val arcPath = Path()
     private val arcDone = Path()
+    private val tmp = FloatArray(2)
 
     /** Where the menu goes (screen pixels: the pen tip) and what it shows. */
     fun setup(
@@ -117,9 +119,24 @@ class PenWheel(context: Context) : View(context) {
     ) {
         screenX = tipScreenX
         screenY = tipScreenY
-        this.tools = tools.filter { it.kind != ACTION }
-        this.actions = tools.filter { it.kind == ACTION }
-        this.colours = colours
+        val t = tools.filter { it.kind == TOOL }
+        val a = tools.filter { it.kind == ACTION }
+        val camera = a.filter { it.value == 2 }
+        val redo = a.filter { it.value == 1 }
+        val undo = a.filter { it.value == 0 }
+        val current = colours.firstOrNull { it.selected }
+        val colourBtn = Item(COLOUR_BUTTON, 0, null, current?.tint ?: lineColour, colours.any { it.selected })
+        slots = t + camera + redo + undo + colourBtn
+        // the colours take the same places; the back button sits where the colour button was
+        val back = Item(BACK, 0, null, Color.WHITE, false)
+        val n = slots.size
+        val cs = ArrayList<Item>()
+        var k = 0
+        for (i in 0 until n) {
+            if (i == n - 1) cs.add(back) else if (k < colours.size) cs.add(colours[k++])
+        }
+        while (k < colours.size) cs.add(cs.size - 1, colours[k++]) // more colours than places: squeeze in
+        colourSlots = cs
         this.lineColour = lineColour
         this.steps = max(2, steps)
         this.stop = stop.coerceIn(0, this.steps - 1)
@@ -132,14 +149,14 @@ class PenWheel(context: Context) : View(context) {
         val loc = IntArray(2)
         getLocationOnScreen(loc)
         // centred on the tip; moved in only as much as needed to stay on screen
-        val m = arcOut + dp(26f)
+        val m = arcOut + dp(20f)
         cx = (screenX - loc[0]).coerceIn(min(m, width / 2f), max(width - m, width / 2f))
         cy = (screenY - loc[1]).coerceIn(min(m, height / 2f), max(height - m, height / 2f))
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        animateTo(1f, 320, OvershootInterpolator(1.15f)) {}
+        animateTo(1f, 360, OvershootInterpolator(1.2f)) {}
     }
 
     /** Shrinks back into the tip, then [onClosed]. */
@@ -147,7 +164,7 @@ class PenWheel(context: Context) : View(context) {
         if (closing) return
         closing = true
         dragging = false
-        animateTo(0f, 180, DecelerateInterpolator()) { onClosed?.invoke() }
+        animateTo(0f, 200, DecelerateInterpolator()) { onClosed?.invoke() }
     }
 
     private fun animateTo(target: Float, ms: Long, interp: android.animation.TimeInterpolator, done: () -> Unit) {
@@ -168,60 +185,37 @@ class PenWheel(context: Context) : View(context) {
         }
     }
 
-    /** How far a part that starts at [delay] (0..1 of the opening) has come in: 0..1 (a bit more on overshoot). */
-    private fun part(delay: Float): Float = ((progress - delay) / (1f - delay)).coerceAtLeast(0f)
-
-    /** Centre of item [i] of [n] on a ring of radius [r], scaled by [p]. */
-    /** Centre of tool [i] of [n]: spread around the lower half of the ring (left to right), clear of the slider. */
-    private fun toolPos(i: Int, n: Int, p: Float, out: FloatArray) {
-        val turn = (1f - min(1f, p)) * -0.7f
-        val deg = if (n <= 1) 90.0 else 140.0 - 100.0 * i / (n - 1)
-        val a = (Math.toRadians(deg) + turn).toFloat()
-        val rr = toolR * p
-        out[0] = cx + rr * cos(a)
-        out[1] = cy + rr * sin(a)
-    }
-
-    /** Undo on the left side of the circle, redo on the right. */
-    private fun actionPos(item: Item, p: Float, out: FloatArray) {
-        val turn = (1f - min(1f, p)) * -0.7f
-        if (item.value == 2) { // camera: right in the middle
-            out[0] = cx
-            out[1] = cy
-            return
+    /** Tools ring ⇄ colours ring. */
+    private fun showColours(on: Boolean) {
+        colourTarget = if (on) 1f else 0f
+        modeAnim?.cancel()
+        modeAnim = ValueAnimator.ofFloat(colourMode, colourTarget).apply {
+            duration = 260
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                colourMode = it.animatedValue as Float
+                invalidate()
+            }
+            start()
         }
-        val a = Math.toRadians(if (item.value == 0) 164.0 else 16.0).toFloat() + turn
-        val rr = toolR * p
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    }
+
+    /** How far button [i] of [n] has come out of the tip: each starts a moment after the one before. */
+    private fun outOf(i: Int, n: Int): Float {
+        val delay = 0.35f * i / max(1, n)
+        return ((progress - delay) / (1f - delay)).coerceAtLeast(0f)
+    }
+
+    /** Centre of place [i] of [n] on the ring (clockwise from the top), [p] of the way out of the tip. */
+    private fun slotPos(i: Int, n: Int, p: Float, out: FloatArray) {
+        val turn = (1f - min(1f, p)) * -0.5f // turns in as it comes out
+        val a = (-PI / 2 + 2 * PI * i / n + turn).toFloat()
+        val rr = ringR * p
         out[0] = cx + rr * cos(a)
         out[1] = cy + rr * sin(a)
     }
 
-    private fun pos(i: Int, n: Int, r: Float, p: Float, start: Double, out: FloatArray) {
-        val turn = (1f - min(1f, p)) * -0.7f // turns in as it opens
-        val a = (start + 2 * PI * i / n + turn).toFloat()
-        val rr = r * p
-        out[0] = cx + rr * cos(a)
-        out[1] = cy + rr * sin(a)
-    }
-
-    private val tmp = FloatArray(2)
-
-    /** An annulus segment from [startDeg] sweeping [sweepDeg], between radius [rIn] and [rOut]. */
-    private fun sector(path: Path, rIn: Float, rOut: Float, startDeg: Float, sweepDeg: Float) {
-        path.rewind()
-        if (rIn <= 0.5f) {
-            // a pie slice from the centre
-            path.moveTo(cx, cy)
-            path.arcTo(cx - rOut, cy - rOut, cx + rOut, cy + rOut, startDeg, sweepDeg, false)
-            path.close()
-            return
-        }
-        path.arcTo(cx - rOut, cy - rOut, cx + rOut, cy + rOut, startDeg, sweepDeg, true)
-        path.arcTo(cx - rIn, cy - rIn, cx + rIn, cy + rIn, startDeg + sweepDeg, -sweepDeg, false)
-        path.close()
-    }
-
-    /** Centre of the − (left end) or + (right end) button of the size slider. */
     private fun stepPos(plus: Boolean, p: Float, out: FloatArray) {
         val deg = if (plus) ARC_START + ARC_SPAN + STEP_GAP else ARC_START - STEP_GAP
         val a = Math.toRadians(deg)
@@ -233,28 +227,27 @@ class PenWheel(context: Context) : View(context) {
     private fun stepAt(x: Float, y: Float): Int {
         if (progress < 0.5f) return 0
         stepPos(false, 1f, tmp)
-        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(5f)) return -1
+        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(7f)) return -1
         stepPos(true, 1f, tmp)
-        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(5f)) return 1
+        if (hypot(x - tmp[0], y - tmp[1]) <= stepSize + dp(7f)) return 1
         return 0
     }
 
     private var pressedStep = 0
-    /** Show the width label after a − / + step (for a moment). */
     private var showLabel = false
     private val hideLabel = Runnable { showLabel = false; invalidate() }
 
     private fun arcAngle(t: Float): Double = Math.toRadians(ARC_START + ARC_SPAN * t)
 
-    /** The size slider as a wedge along the arc, from [t0] to [t1] (0..1), thin to thick, scaled by [p]. */
+    /** The size slider as a thin wedge along the arc, from [t0] to [t1] (0..1), thin to thick, scaled by [p]. */
     private fun wedge(path: Path, t0: Float, t1: Float, p: Float) {
         path.rewind()
-        val n = 48
+        val n = 40
         val r = arcR * p
         for (k in 0..n) {
             val t = t0 + (t1 - t0) * k / n
             val a = arcAngle(t)
-            val h = (dp(1.2f) + dp(4.3f) * t) * p
+            val h = (dp(1f) + dp(3.2f) * t) * p
             val x = cx + (r + h) * cos(a).toFloat()
             val y = cy + (r + h) * sin(a).toFloat()
             if (k == 0) path.moveTo(x, y) else path.lineTo(x, y)
@@ -262,10 +255,33 @@ class PenWheel(context: Context) : View(context) {
         for (k in n downTo 0) {
             val t = t0 + (t1 - t0) * k / n
             val a = arcAngle(t)
-            val h = (dp(1.2f) + dp(4.3f) * t) * p
+            val h = (dp(1f) + dp(3.2f) * t) * p
             path.lineTo(cx + (r - h) * cos(a).toFloat(), cy + (r - h) * sin(a).toFloat())
         }
         path.close()
+    }
+
+    /** A round frosted button with a hairline light edge and a soft shadow. */
+    private fun glassButton(canvas: Canvas, x: Float, y: Float, r: Float, alpha: Int, selected: Boolean) {
+        fill.shader = null
+        fill.color = 0xFF2C2C2E.toInt()
+        fill.alpha = (alpha * 0.93f).toInt()
+        fill.setShadowLayer(dp(8f), 0f, dp(3f), ((0x66 * alpha / 255) shl 24))
+        canvas.drawCircle(x, y, r, fill)
+        fill.clearShadowLayer()
+        // light from above, like frosted glass
+        shine.shader = RadialGradient(x, y - r * 0.9f, r * 1.6f, intArrayOf(0x26FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
+        shine.alpha = alpha
+        canvas.drawCircle(x, y, r, shine)
+        ring.color = if (selected) ACCENT else 0x33FFFFFF
+        ring.alpha = if (selected) alpha else alpha * 0x33 / 255
+        ring.strokeWidth = if (selected) dp(2f) else dp(1f)
+        canvas.drawCircle(x, y, r - ring.strokeWidth / 2f, ring)
+        if (selected) {
+            fill.color = ACCENT
+            fill.alpha = (alpha * 0.22f).toInt()
+            canvas.drawCircle(x, y, r, fill)
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -273,92 +289,90 @@ class PenWheel(context: Context) : View(context) {
         if (p <= 0.001f) return
         val a = min(1f, p * 1.6f)
         val alpha = (a * 255).toInt()
-        val s = min(1f, p)
-        val sliderP = min(1f, part(0.2f))
+        val cm = colourMode
 
-        // tools (inner ring)
-        val tp = part(0f)
-        for ((i, it) in tools.withIndex()) {
-            toolPos(i, tools.size, tp, tmp)
-            val r = toolSize * min(1f, tp) * (if (it === pressed) 0.88f else 1f)
-            // no disc behind the wheel: each tool has its own small dark button, so it reads on any page
-            fill.shader = null
-            fill.color = 0xFF1C1C1E.toInt()
-            fill.alpha = (alpha * 0.94f).toInt()
-            fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
-            canvas.drawCircle(tmp[0], tmp[1], r, fill)
-            fill.clearShadowLayer()
-            if (it.selected) {
-                fill.color = ACCENT
-                fill.alpha = (alpha * 0.25f).toInt()
-                canvas.drawCircle(tmp[0], tmp[1], r, fill)
-                ring.color = ACCENT
-                ring.alpha = alpha
-                ring.strokeWidth = dp(1.6f)
-                canvas.drawCircle(tmp[0], tmp[1], r, ring)
+        // ---- the tools ring (fades and shrinks away while the colours come in) ----
+        if (cm < 1f) {
+            val n = slots.size
+            for ((i, it) in slots.withIndex()) {
+                val op = outOf(i, n) * (1f - cm * 0.3f)
+                if (op <= 0f) continue
+                slotPos(i, n, op, tmp)
+                val k = (1f - cm)
+                val r = btnR * min(1f, op) * (0.6f + 0.4f * k) * (if (it === pressed) 0.9f else 1f)
+                val al = (alpha * k).toInt()
+                if (al <= 0) continue
+                when (it.kind) {
+                    COLOUR_BUTTON -> {
+                        glassButton(canvas, tmp[0], tmp[1], r, al, false)
+                        // the current colour as a dot, with a thin ring of all the colours' idea: a white edge
+                        fill.shader = null
+                        fill.color = it.tint
+                        fill.alpha = al
+                        canvas.drawCircle(tmp[0], tmp[1], r * 0.58f, fill)
+                        ring.color = Color.WHITE
+                        ring.alpha = al * 0xCC / 255
+                        ring.strokeWidth = dp(1.5f)
+                        canvas.drawCircle(tmp[0], tmp[1], r * 0.58f + dp(2.5f), ring)
+                    }
+                    else -> {
+                        glassButton(canvas, tmp[0], tmp[1], r, al, it.selected)
+                        val ic = it.icon ?: continue
+                        val h = (r * 0.62f).toInt()
+                        ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
+                        ic.setTint(it.tint)
+                        ic.alpha = if (it.kind == ACTION && it.value < 2 && !canDo(it.value)) al / 3 else al
+                        ic.draw(canvas)
+                    }
+                }
             }
-            val ic = it.icon ?: continue
-            val h = (r * 0.7f).toInt()
-            ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
-            ic.setTint(it.tint)
-            ic.alpha = alpha
-            ic.draw(canvas)
         }
 
-        // undo / redo on the sides (dimmed when there's nothing to undo / redo)
-        for (it in actions) {
-            actionPos(it, tp, tmp)
-            val r = toolSize * min(1f, tp) * (if (it === pressed) 0.88f else 1f)
-            val on = canDo(it.value)
-            fill.shader = null
-            fill.color = 0xFF1C1C1E.toInt()
-            fill.alpha = (alpha * 0.94f).toInt()
-            fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
-            canvas.drawCircle(tmp[0], tmp[1], r, fill)
-            fill.clearShadowLayer()
-            val ic = it.icon ?: continue
-            val h = (r * 0.7f).toInt()
-            ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
-            ic.setTint(it.tint)
-            ic.alpha = if (on) alpha else alpha / 3
-            ic.draw(canvas)
-        }
-
-        // colours: a ring of segments, the first at the top, going clockwise
-        val cp = part(0.1f)
-        if (cp > 0f) {
-            val n = colours.size
-            val step = 360f / n
-            // the current colour last, so its lift shadow falls over its neighbours
-            for (i in colours.indices.sortedBy { if (colours[it].selected) 1 else 0 }) {
-                val it = colours[i]
-                // each segment sweeps in a moment after the one before
-                val sp = ((cp * 1.25f) - i * 0.25f / n).coerceIn(0f, 1f)
-                if (sp <= 0f) continue
-                val mid = -90f + step * i + (1f - sp) * -25f
-                val sweep = (step - segGap) * sp
-                // the current colour stands out like in the top palette: taller (out and in) and lifted
-                val growOut = if (it.selected) dp(5f) else 0f
-                val growIn = 0f
-                val press = if (it === pressed) dp(3f) else 0f
-                val rIn = (segIn - growIn) * min(1f, cp)
-                val rOut = (segOut + growOut - press) * min(1f, cp)
-                sector(segPath, rIn, rOut, mid - sweep / 2f, sweep)
+        // ---- the colours ring ----
+        if (cm > 0f) {
+            val n = colourSlots.size
+            for ((i, it) in colourSlots.withIndex()) {
+                val op = min(1f, p) * cm
+                slotPos(i, n, 1f, tmp)
+                // each dot grows a moment after the one before
+                val g = ((cm * 1.4f) - 0.4f * i / n).coerceIn(0f, 1f)
+                if (g <= 0f) continue
+                val al = (alpha * g).toInt()
+                if (it.kind == BACK) {
+                    val r = btnR * g * (if (it === pressed) 0.9f else 1f)
+                    glassButton(canvas, tmp[0], tmp[1], r, al, false)
+                    // a chevron pointing back
+                    ring.color = Color.WHITE
+                    ring.alpha = al
+                    ring.strokeWidth = dp(2f)
+                    ring.strokeCap = Paint.Cap.ROUND
+                    val c = r * 0.28f
+                    canvas.drawLine(tmp[0] + c * 0.5f, tmp[1] - c, tmp[0] - c * 0.5f, tmp[1], ring)
+                    canvas.drawLine(tmp[0] - c * 0.5f, tmp[1], tmp[0] + c * 0.5f, tmp[1] + c, ring)
+                    ring.strokeCap = Paint.Cap.BUTT
+                    continue
+                }
+                val r = dotR * g * (if (it === pressed) 0.88f else 1f) * (if (it.selected) 1.08f else 1f)
                 fill.shader = null
                 fill.color = it.tint
-                fill.alpha = alpha
-                if (it.selected) fill.setShadowLayer(dp(6f), 0f, dp(2f), ((0x80 * a).toInt() shl 24))
-                canvas.drawPath(segPath, fill)
+                fill.alpha = al
+                fill.setShadowLayer(dp(6f), 0f, dp(2f), ((0x66 * al / 255) shl 24))
+                canvas.drawCircle(tmp[0], tmp[1], r, fill)
                 fill.clearShadowLayer()
-                // a soft sheen from the top-left
-                shine.shader = RadialGradient(cx - rOut * 0.5f, cy - rOut * 0.6f, rOut * 1.6f,
-                    intArrayOf(0x30FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
-                shine.alpha = alpha
-                canvas.drawPath(segPath, shine)
+                // a soft sheen, and a white ring around the current colour
+                shine.shader = RadialGradient(tmp[0], tmp[1] - r * 0.8f, r * 1.5f, intArrayOf(0x30FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
+                shine.alpha = al
+                canvas.drawCircle(tmp[0], tmp[1], r, shine)
+                ring.color = if (it.selected) Color.WHITE else 0x40FFFFFF
+                ring.alpha = if (it.selected) al else al / 4
+                ring.strokeWidth = dp(if (it.selected) 2.5f else 1f)
+                canvas.drawCircle(tmp[0], tmp[1], r + dp(if (it.selected) 4f else 0f), ring)
+                if (op <= 0f) continue
             }
         }
 
-        // size slider (arc over the top): grey wedge, filled in the line colour up to the thumb
+        // ---- the size slider: a thin arc over the ring, filled in the line colour up to the thumb ----
+        val sliderP = min(1f, ((progress - 0.25f) / 0.75f).coerceAtLeast(0f))
         if (sliderP > 0f) {
             val t = stop / (steps - 1f)
             wedge(arcPath, 0f, 1f, sliderP)
@@ -381,31 +395,37 @@ class PenWheel(context: Context) : View(context) {
             shadow.setShadowLayer(dp(4f), 0f, dp(1f), 0x66000000)
             canvas.drawCircle(tx, ty, tr, shadow)
             shadow.clearShadowLayer()
-            // − and + at the ends: one step thinner / thicker
+            // − and + at the ends: small frosted buttons, one step thinner / thicker
             for (plus in booleanArrayOf(false, true)) {
                 stepPos(plus, sliderP, tmp)
                 val r = stepSize * sliderP * (if (pressedStep == (if (plus) 1 else -1)) 0.88f else 1f)
-                fill.shader = null
-                fill.color = 0xFF1C1C1E.toInt()
-                fill.alpha = (alpha * 0.94f).toInt()
-                fill.setShadowLayer(dp(4f), 0f, dp(1f), ((0x55 * a).toInt() shl 24))
-                canvas.drawCircle(tmp[0], tmp[1], r, fill)
-                fill.clearShadowLayer()
+                glassButton(canvas, tmp[0], tmp[1], r, (alpha * sliderP).toInt(), false)
                 ring.color = Color.WHITE
                 ring.alpha = alpha
-                ring.strokeWidth = dp(2f)
+                ring.strokeWidth = dp(1.8f)
                 ring.strokeCap = Paint.Cap.ROUND
                 val arm = r * 0.4f
                 canvas.drawLine(tmp[0] - arm, tmp[1], tmp[0] + arm, tmp[1], ring)
                 if (plus) canvas.drawLine(tmp[0], tmp[1] - arm, tmp[0], tmp[1] + arm, ring)
                 ring.strokeCap = Paint.Cap.BUTT
             }
-            // the width in points, just outside the thumb, while dragging (or just after a step)
+            // the size, just outside the thumb, while dragging (or just after a step)
             if (dragging || showLabel) {
                 text.textSize = dp(11f)
                 text.alpha = alpha
-                val lr = arcR + dp(23f)
+                val lr = arcR + dp(20f)
                 canvas.drawText(label(stop), cx + lr * cos(ang).toFloat(), cy + lr * sin(ang).toFloat() + dp(4f), text)
+            }
+        }
+
+        // ---- the centre: the current line, as it will be drawn ----
+        if (cm < 1f) {
+            val w = previewPx(stop).coerceIn(dp(1f), dp(20f)) * min(1f, p) * (1f - cm)
+            if (w > 0f) {
+                fill.shader = null
+                fill.color = lineColour
+                fill.alpha = (alpha * (1f - cm)).toInt()
+                canvas.drawCircle(cx, cy, w / 2f, fill)
             }
         }
     }
@@ -413,34 +433,23 @@ class PenWheel(context: Context) : View(context) {
     /** Stop of the size slider under (x, y), or -1 if not on the slider ([generous]: anywhere, while dragging). */
     private fun sliderAt(x: Float, y: Float, generous: Boolean): Int {
         val d = hypot(x - cx, y - cy)
-        if (!generous && abs(d - arcR) > dp(17f)) return -1
+        if (!generous && abs(d - arcR) > dp(16f)) return -1
         val ang = Math.toDegrees(atan2((y - cy).toDouble(), (x - cx).toDouble()))
         var rel = ang - ARC_START
         while (rel < -110) rel += 360.0
         while (rel > 250) rel -= 360.0
-        if (!generous && (rel < -10 || rel > ARC_SPAN + 10)) return -1
+        if (!generous && (rel < -6 || rel > ARC_SPAN + 6)) return -1
         val t = (rel / ARC_SPAN).coerceIn(0.0, 1.0)
         return (t * (steps - 1)).roundToInt()
     }
 
     private fun hit(x: Float, y: Float): Item? {
         if (progress < 0.5f) return null
-        for ((i, it) in tools.withIndex()) {
-            toolPos(i, tools.size, 1f, tmp)
-            if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
-        }
-        for (it in actions) {
-            actionPos(it, 1f, tmp)
-            if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
-        }
-        // colour segments: by distance and angle
-        val d = hypot(x - cx, y - cy)
-        if (colours.isNotEmpty() && d >= segIn - dp(4f) && d <= segOut + dp(8f)) {
-            val n = colours.size
-            var deg = Math.toDegrees(atan2((y - cy).toDouble(), (x - cx).toDouble())) + 90.0 + 180.0 / n
-            while (deg < 0) deg += 360.0
-            val i = ((deg % 360.0) / (360.0 / n)).toInt().coerceIn(0, n - 1)
-            return colours[i]
+        val list = if (colourTarget >= 1f) colourSlots else slots
+        val n = list.size
+        for ((i, it) in list.withIndex()) {
+            slotPos(i, n, 1f, tmp)
+            if (hypot(x - tmp[0], y - tmp[1]) <= btnR + dp(6f)) return it
         }
         return null
     }
@@ -481,7 +490,7 @@ class PenWheel(context: Context) : View(context) {
             }
             MotionEvent.ACTION_MOVE -> {
                 if (dragging) setStop(sliderAt(e.x, e.y, true))
-                else {
+                else if (pressedStep == 0) {
                     val h = hit(e.x, e.y)
                     if (h !== pressed) {
                         pressed = h; invalidate()
@@ -490,11 +499,11 @@ class PenWheel(context: Context) : View(context) {
             }
             MotionEvent.ACTION_UP -> {
                 if (pressedStep != 0) {
-                    // one step thinner / thicker; the wheel stays open
+                    // one step thinner / thicker; the menu stays open
                     val step = pressedStep
                     pressedStep = 0
                     if (stepAt(e.x, e.y) == step) {
-                        showLabel = true // the width shows next to the thumb for a moment
+                        showLabel = true
                         setStop((stop + step).coerceIn(0, steps - 1))
                         removeCallbacks(hideLabel)
                         postDelayed(hideLabel, 900)
@@ -509,14 +518,20 @@ class PenWheel(context: Context) : View(context) {
                 }
                 val h = hit(e.x, e.y)
                 pressed = null
-                if (h != null && h.kind == ACTION && h.value != 2) {
-                    // undo / redo: done, and the wheel stays open for more
-                    if (canDo(h.value)) onPick?.invoke(h)
-                    invalidate()
-                    return true
+                when {
+                    h == null -> close() // a tap anywhere else closes it
+                    h.kind == COLOUR_BUTTON -> showColours(true)
+                    h.kind == BACK -> showColours(false)
+                    h.kind == ACTION && h.value != 2 -> {
+                        // undo / redo: done, and the menu stays open for more
+                        if (canDo(h.value)) onPick?.invoke(h)
+                        invalidate()
+                    }
+                    else -> {
+                        onPick?.invoke(h)
+                        close()
+                    }
                 }
-                if (h != null) onPick?.invoke(h)
-                close() // a pick, or a tap anywhere else, closes it
             }
             MotionEvent.ACTION_CANCEL -> {
                 pressedStep = 0
