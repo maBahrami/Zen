@@ -2836,7 +2836,6 @@ class MainActivity : ComponentActivity() {
 
     // ---------------- favourite folders ----------------
 
-    /** Favourite folders (tree uri, name), in the order they were added. */
     /**
      * Name of the folder holding the saved file [uri], or null if it can't be told. A favourite folder gives its
      * own name; otherwise the folder is read from the file's id where the storage app uses paths
@@ -2867,6 +2866,7 @@ class MainActivity : ComponentActivity() {
         null
     }
 
+    /** Favourite folders (tree uri, name), in the order they were added. */
     private fun favoriteFolders(): List<Pair<String, String>> = try {
         val arr = org.json.JSONArray(prefs.getString("fav_folders", "[]"))
         (0 until arr.length()).mapNotNull { k ->
@@ -2896,9 +2896,14 @@ class MainActivity : ComponentActivity() {
     /** A folder picked in the system picker: kept (with permission to look inside) as a favourite. */
     private fun addFavoriteFolder(tree: Uri) {
         try {
-            contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            contentResolver.takePersistableUriPermission(tree,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         } catch (e: Exception) {
-            // not needed to jump there; only nice to have
+            try {
+                contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e2: Exception) {
+                // not needed to jump there; only nice to have
+            }
         }
         lifecycleScope.launch {
             val name = withContext(Dispatchers.IO) {
@@ -2918,8 +2923,176 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Opens the file picker inside the favourite folder. */
+    /**
+     * A favourite folder, browsed inside the app: its subfolders and PDFs in a small window. Tap a PDF to
+     * open it, a folder to go in. Back goes up one folder (and closes the window at the top); the × closes
+     * it right away. The system picker is still one tap away (for several files at once).
+     */
     private fun openInFavorite(treeUri: String) {
-        val start = try {
+        val tree = try { Uri.parse(treeUri) } catch (e: Exception) { null }
+        val rootId = try { tree?.let { DocumentsContract.getTreeDocumentId(it) } } catch (e: Exception) { null }
+        if (tree == null || rootId == null) { openInFavoriteSystem(treeUri); return }
+        val favName = favoriteFolders().firstOrNull { it.first == treeUri }?.second ?: "Folder"
+        val canWrite = try {
+            contentResolver.persistedUriPermissions.any { it.uri == tree && it.isWritePermission }
+        } catch (e: Exception) {
+            false
+        }
+        val path = ArrayList<Pair<String, String>>() // (document id, name), the favourite first
+        path.add(rootId to favName)
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(6))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val title = TextView(this).apply {
+            textSize = 16f
+            setTextColor(TEXT)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setSingleLine()
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+        }
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply { addView(list) }
+        lateinit var dlg: AlertDialog
+        lateinit var show: () -> Unit
+        fun close() = closeDialog(dlg) { dlg.cancel() }
+        fun up(): Boolean {
+            if (path.size <= 1) return false
+            path.removeAt(path.size - 1)
+            show()
+            return true
+        }
+        val backBtn = barIcon(R.drawable.ic_back, "Up one folder") { up() }
+        header.addView(backBtn, barLp())
+        header.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(4); marginEnd = dp(4)
+        })
+        header.addView(barIcon(R.drawable.ic_close, "Back to Zen") { close() }, barLp())
+        root.addView(header)
+        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            (resources.displayMetrics.heightPixels * 0.55f).toInt()).apply { topMargin = dp(4) })
+        root.addView(TextView(this).apply {
+            text = "Open with the system picker…"
+            textSize = 13f
+            setTextColor(ACCENT)
+            setPadding(dp(12), dp(10), dp(12), dp(6))
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 10))
+            isClickable = true
+            setOnClickListener {
+                val at = DocumentsContract.buildDocumentUriUsingTree(tree, path.last().first)
+                closeDialog(dlg) { dlg.cancel(); openInFavoriteSystem(treeUri, at) }
+            }
+        })
+        fun note(msg: String) {
+            list.removeAllViews()
+            list.addView(TextView(this).apply {
+                text = msg
+                textSize = 13f
+                setTextColor(TEXT_DIM)
+                setPadding(dp(12), dp(16), dp(12), dp(16))
+            })
+        }
+        val dateFmt = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
+        fun row(icon: Int, name: String, sub: String?, tint: Int, onClick: () -> Unit): View =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 10))
+                isClickable = true
+                setOnClickListener { onClick() }
+                addView(ImageView(this@MainActivity).apply {
+                    setImageResource(icon)
+                    imageTintList = ColorStateList.valueOf(tint)
+                }, LinearLayout.LayoutParams(dp(22), dp(22)))
+                val texts = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                texts.addView(TextView(this@MainActivity).apply {
+                    text = name
+                    textSize = 14f
+                    setTextColor(TEXT)
+                    setSingleLine()
+                    ellipsize = TextUtils.TruncateAt.MIDDLE
+                })
+                if (sub != null) texts.addView(TextView(this@MainActivity).apply {
+                    text = sub
+                    textSize = 11f
+                    setTextColor(TEXT_DIM)
+                })
+                addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(12) })
+            }
+        var generation = 0
+        show = {
+            val (docId, name) = path.last()
+            title.text = name
+            backBtn.isEnabled = path.size > 1
+            backBtn.alpha = if (path.size > 1) 1f else 0.3f
+            scroll.scrollTo(0, 0)
+            note("Loading…")
+            val gen = ++generation
+            lifecycleScope.launch {
+                class Entry(val id: String, val name: String, val dir: Boolean, val modified: Long)
+                val entries = withContext(Dispatchers.IO) {
+                    try {
+                        val out = ArrayList<Entry>()
+                        val kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId)
+                        contentResolver.query(kids, arrayOf(
+                            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                            DocumentsContract.Document.COLUMN_MIME_TYPE,
+                            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                        ), null, null, null)?.use { c ->
+                            while (c.moveToNext()) {
+                                val id = c.getString(0) ?: continue
+                                val n = c.getString(1) ?: continue
+                                if (n.startsWith(".")) continue
+                                val mime = c.getString(2) ?: ""
+                                val dir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                                if (!dir && mime != "application/pdf" && !n.endsWith(".pdf", ignoreCase = true)) continue
+                                out.add(Entry(id, n, dir, if (c.isNull(3)) 0L else c.getLong(3)))
+                            }
+                        }
+                        // folders first, then files, each by name
+                        out.sortedWith(compareBy<Entry>({ !it.dir }, { it.name.lowercase(Locale.getDefault()) }))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "browse folder", e)
+                        null
+                    }
+                }
+                if (gen != generation || !dlg.isShowing) return@launch
+                when {
+                    entries == null -> note("Can't look inside this folder. Try the system picker below.")
+                    entries.isEmpty() -> note("No PDFs or folders here")
+                    else -> {
+                        list.removeAllViews()
+                        for (en in entries) {
+                            list.addView(if (en.dir) row(R.drawable.ic_folder, en.name, null, ACCENT) {
+                                path.add(en.id to en.name)
+                                show()
+                            } else row(R.drawable.ic_doc, en.name,
+                                if (en.modified > 0) dateFmt.format(Date(en.modified)) else null, TEXT_DIM) {
+                                val uri = DocumentsContract.buildDocumentUriUsingTree(tree, en.id)
+                                closeDialog(dlg) { dlg.cancel() }
+                                importAll(listOf(uri), fromPicker = true, canWrite = canWrite)
+                            })
+                        }
+                    }
+                }
+            }
+        }
+        dlg = ZenBuilder().setView(root).create()
+        dialogBack[dlg] = { up() }
+        show()
+        compactShow(dlg, 460)
+    }
+
+    /** Opens the system file picker inside the favourite folder (or at [at] inside it). */
+    private fun openInFavoriteSystem(treeUri: String, at: Uri? = null) {
+        val start = at ?: try {
             val tree = Uri.parse(treeUri)
             DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
         } catch (e: Exception) {
@@ -3006,10 +3179,6 @@ class MainActivity : ComponentActivity() {
      * a rounded card with a hairline edge, and calm blue buttons without all-caps.
      */
     /**
-     * Animates the next layout change (bars appearing or hiding, panels opening, the two sides moving)
-     * instead of jumping. The tab bar and the floating bars place themselves and are left out.
-     */
-    /**
      * The top bar floats over the pages: the pen toolbar and the page list sit just below it, and the
      * pages start below it (and scroll under it). In full focus mode the bar is hidden and nothing is kept free.
      */
@@ -3026,6 +3195,10 @@ class MainActivity : ComponentActivity() {
         paneB.topInset = h.toFloat()
     }
 
+    /**
+     * Animates the next layout change (bars appearing or hiding, panels opening, the two sides moving)
+     * instead of jumping. The tab bar and the floating bars place themselves and are left out.
+     */
     private fun smoothLayout() {
         val root = findViewById<ViewGroup>(android.R.id.content) ?: return
         if (!root.isLaidOut) return
@@ -3099,6 +3272,8 @@ class MainActivity : ComponentActivity() {
     /** Button actions of each dialog made with [ZenBuilder], so the dialog can animate away before running them. */
     private val dialogButtons = java.util.WeakHashMap<AlertDialog, Map<Int, android.content.DialogInterface.OnClickListener?>>()
     private val closingDialogs = java.util.Collections.newSetFromMap(java.util.WeakHashMap<Dialog, Boolean>())
+    /** Dialogs that use Back for themselves first (true = handled, don't close). */
+    private val dialogBack = java.util.WeakHashMap<Dialog, () -> Boolean>()
 
     /** How dark the screen gets behind a dialog. */
     private val dialogDim = 0.45f
@@ -3241,7 +3416,8 @@ class MainActivity : ComponentActivity() {
 
             override fun dispatchKeyEvent(e: android.view.KeyEvent): Boolean {
                 if (e.keyCode == android.view.KeyEvent.KEYCODE_BACK) {
-                    if (e.action == android.view.KeyEvent.ACTION_UP && !e.isCanceled) closeDialog(dialog) { dialog.cancel() }
+                    if (e.action == android.view.KeyEvent.ACTION_UP && !e.isCanceled &&
+                        dialogBack[dialog]?.invoke() != true) closeDialog(dialog) { dialog.cancel() }
                     return true
                 }
                 return cb.dispatchKeyEvent(e)
@@ -3804,11 +3980,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun importAll(uris: List<Uri>, fromPicker: Boolean) {
-        lifecycleScope.launch { for (u in uris) importOne(u, fromPicker) }
+    private fun importAll(uris: List<Uri>, fromPicker: Boolean, canWrite: Boolean = true) {
+        lifecycleScope.launch { for (u in uris) importOne(u, fromPicker, canWrite) }
     }
 
-    private suspend fun importOne(uri: Uri, fromPicker: Boolean) {
+    private suspend fun importOne(uri: Uri, fromPicker: Boolean, canWrite: Boolean = true) {
         // already open in a tab: just show that tab (no second copy of the same file)
         val key = uri.toString()
         docs.firstOrNull { !it.closed && (it.originUri == key || it.saveUri == key) }?.let { open ->
@@ -3838,7 +4014,7 @@ class MainActivity : ComponentActivity() {
             // remember where the file came from, so "Save in place" can write back to it
             if (fromPicker) keepWriteAccess(uri)
             d.originUri = uri.toString()
-            d.saveUri = if (editable && fromPicker) uri.toString() else null
+            d.saveUri = if (editable && fromPicker && canWrite) uri.toString() else null
             val resume = lastPageOf(d) // before the new tab starts recording its own page
             if (resume > 0) openedAt[d.id] = android.os.SystemClock.uptimeMillis()
             addDoc(d, true)
