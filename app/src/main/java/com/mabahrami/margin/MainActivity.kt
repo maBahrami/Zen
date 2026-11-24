@@ -5087,7 +5087,14 @@ class MainActivity : ComponentActivity() {
                     null
                 }
             }
+            // recent clipboard images (newest first): tap one to paste it here
+            recordClipboardImage()
+            val recent = withContext(Dispatchers.IO) {
+                clipHistory().mapNotNull { f -> decodeFileThumb(f, dp(120))?.let { f to it } }
+            }
             if (active !== d) return@launch
+            // with recent images to pick from, a picture on the clipboard needs no big preview of its own
+            val showTop = sel != null || text != null || recent.isEmpty()
             val box = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -5102,7 +5109,7 @@ class MainActivity : ComponentActivity() {
                 text != null -> "Text (can't be pasted onto the page)"
                 else -> "The clipboard is empty"
             }
-            if (pic != null) {
+            if (pic != null && showTop) {
                 box.addView(ImageView(this@MainActivity).apply {
                     setImageBitmap(pic)
                     adjustViewBounds = true
@@ -5127,7 +5134,7 @@ class MainActivity : ComponentActivity() {
                     if (text.length > 300) dp(220) else ViewGroup.LayoutParams.WRAP_CONTENT,
                 ).apply { bottomMargin = dp(8) })
             }
-            if (pic == null && text == null) {
+            if (pic == null && text == null && showTop) {
                 // nothing to preview: a placeholder card, with a short line saying why
                 box.addView(FrameLayout(this@MainActivity).apply {
                     background = rounded(0xFF2C2C2E.toInt(), 8)
@@ -5142,11 +5149,6 @@ class MainActivity : ComponentActivity() {
                     setTextColor(TEXT_DIM)
                     gravity = Gravity.CENTER
                 })
-            }
-            // recent clipboard images (newest first): tap one to paste it here
-            recordClipboardImage()
-            val recent = withContext(Dispatchers.IO) {
-                clipHistory().mapNotNull { f -> decodeFileThumb(f, dp(120))?.let { f to it } }
             }
             lateinit var dlg: AlertDialog
             if (recent.isNotEmpty()) {
