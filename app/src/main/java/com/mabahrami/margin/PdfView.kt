@@ -2310,18 +2310,22 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         }
     }
 
-    /** When nothing is waiting: renders the pages just above and below the screen, so scrolling finds them ready. */
+    /**
+     * When nothing is waiting: renders the pages just above and below the screen (at half sharpness), so
+     * scrolling finds something ready. Only pages not cached at all, and only while the cache has room: a
+     * prefetch must never push out the pages on screen (that made them re-render over and over).
+     */
     private fun prefetchAround(d: Doc, s: Float) {
         if (interacting || pending.isNotEmpty() || visLast < visFirst) return
         for (i in listOf(visLast + 1, visFirst - 1, visLast + 2, visFirst - 2)) {
             val page = d.pages.getOrNull(i) ?: continue
             if (page.isBlank || page.src < 0) continue
-            val pb = cache.get(pageKey(d, page, d.dark))
-            val want = bucketFor(page, s)
-            if (pb == null || abs(pb.scale - want) > 0.01f) {
-                requestRender(d, page, want)
-                return // one at a time
-            }
+            if (cache.get(pageKey(d, page, d.dark)) != null || cache.get(pageKey(d, page, !d.dark)) != null) continue
+            val want = bucketFor(page, s * 0.5f)
+            val bytes = 4L * (page.w * want).toLong() * (page.h * want).toLong()
+            if (cache.size() + bytes > cache.maxSize() * 0.6) return
+            requestRender(d, page, want)
+            return // one at a time
         }
     }
 
