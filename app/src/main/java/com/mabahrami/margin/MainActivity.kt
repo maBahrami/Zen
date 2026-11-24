@@ -2128,7 +2128,7 @@ class MainActivity : ComponentActivity() {
 
     /**
      * A notice like a toast, but sized to its text (system toasts cut off after two lines): a bold title and
-     * a few lines under it, near the bottom of the screen for 4 seconds. Tap to close it early.
+     * a few lines under it, near the bottom of the screen for 5 seconds. Tap to close it early.
      */
     private fun showNotice(title: String, vararg lines: String?) {
         val stage = stageView ?: run { toast(title); return }
@@ -2172,7 +2172,7 @@ class MainActivity : ComponentActivity() {
         ).apply { bottomMargin = dp(72) })
         noticeView = box
         box.animate().alpha(1f).translationY(0f).setDuration(200).start()
-        box.postDelayed({ if (box.parent != null) hide() }, 4000)
+        box.postDelayed({ if (box.parent != null) hide() }, 5000)
     }
 
     // ======================= tabs =======================
@@ -2837,30 +2837,38 @@ class MainActivity : ComponentActivity() {
     // ---------------- favourite folders ----------------
 
     /**
-     * Name of the folder holding the saved file [uri], or null if it can't be told. A favourite folder gives its
-     * own name; otherwise the folder is read from the file's id where the storage app uses paths
-     * (like "primary:Documents/Notes/a.pdf"), and the top of the storage is called "Internal storage".
+     * Where the saved file [uri] is: its whole folder path, like "Internal storage/Documents/Notes", or null if
+     * it can't be told. Read from the file's id where the storage app uses paths (the tablet's own storage,
+     * SD cards, Downloads). Other storage apps (like Drive) don't give a path: there a favourite folder holding
+     * the file gives its name.
      */
     private fun folderNameOf(uri: Uri): String? = try {
         val docId = DocumentsContract.getDocumentId(uri)
-        val fav = favoriteFolders().firstOrNull { (tree, _) ->
-            try {
-                val t = Uri.parse(tree)
-                t.authority == uri.authority && docId.startsWith(DocumentsContract.getTreeDocumentId(t).trimEnd('/') + "/") &&
-                    docId.removePrefix(DocumentsContract.getTreeDocumentId(t).trimEnd('/') + "/").indexOf('/') < 0
-            } catch (e: Exception) {
-                false
+        fun fromPath(abs: String): String? {
+            val dir = abs.substringBeforeLast('/', "")
+            return when {
+                dir.startsWith("/storage/emulated/0") -> "Internal storage" + dir.removePrefix("/storage/emulated/0")
+                dir.isNotEmpty() -> dir.trimStart('/')
+                else -> null
             }
         }
         when {
-            fav != null -> fav.second
             uri.authority == "com.android.externalstorage.documents" && docId.contains(':') -> {
-                val path = docId.substringAfter(':')
-                if (path.contains('/')) path.substringBeforeLast('/').substringAfterLast('/')
-                else if (docId.startsWith("primary:")) "Internal storage" else null
+                val volume = docId.substringBefore(':')
+                val inside = docId.substringAfter(':').trim('/')
+                val top = if (volume == "primary") "Internal storage" else "SD card"
+                if (inside.contains('/')) top + "/" + inside.substringBeforeLast('/') else top
             }
-            uri.authority == "com.android.providers.downloads.documents" -> "Downloads"
-            else -> null
+            uri.authority == "com.android.providers.downloads.documents" ->
+                (if (docId.startsWith("raw:")) fromPath(docId.removePrefix("raw:")) else null) ?: "Downloads"
+            else -> favoriteFolders().firstOrNull { (tree, _) ->
+                try {
+                    val t = Uri.parse(tree)
+                    t.authority == uri.authority && docId.startsWith(DocumentsContract.getTreeDocumentId(t).trimEnd('/') + "/")
+                } catch (e: Exception) {
+                    false
+                }
+            }?.second
         }
     } catch (e: Exception) {
         null
