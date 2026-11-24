@@ -242,7 +242,7 @@ class MainActivity : ComponentActivity() {
             if (uri != null && d != null) {
                 keepWriteAccess(uri)
                 writeDoc(d, uri, isSave = true, fromPicker = true)
-            }
+            } else if (d != null) closeAfterSave.remove(d.id) // no place chosen: the tab stays open
         }
 
     private val pickImageLauncher =
@@ -2840,6 +2840,8 @@ class MainActivity : ComponentActivity() {
                 "If you close it, you can still reopen it from the folder icon (Recently closed) for 7 days.")
             .setPositiveButton("Save first") { _, _ ->
                 activate(d)
+                // once it's saved, the tab closes by itself
+                closeAfterSave[d.id] = System.currentTimeMillis()
                 save(d)
             }
             .setNeutralButton("Close anyway") { _, _ -> closeDoc(d) }
@@ -2847,6 +2849,17 @@ class MainActivity : ComponentActivity() {
             .create()
             .let { compactShow(it, 360) }
             .getButton(AlertDialog.BUTTON_NEUTRAL)?.setTextColor(0xFFFF453A.toInt())
+    }
+
+    /**
+     * Tabs to close as soon as their save succeeds ("Save first" when closing), with when that was asked.
+     * Forgotten if the save is cancelled or fails, or after a few minutes (the save window was left open).
+     */
+    private val closeAfterSave = HashMap<String, Long>()
+
+    private fun wantsCloseAfterSave(d: Doc): Boolean {
+        val at = closeAfterSave.remove(d.id) ?: return false
+        return System.currentTimeMillis() - at < 5 * 60_000L
     }
 
     private fun closeDoc(d: Doc) {
@@ -4531,7 +4544,7 @@ class MainActivity : ComponentActivity() {
                     renameTo = if (n != current) "$n.pdf" else null)
             }
         }
-        b.setNegativeButton("Cancel", null)
+        b.setNegativeButton("Cancel") { _, _ -> closeAfterSave.remove(d.id) } // not saved: the tab stays
         val dlg = b.create()
         // save as a new file: right here, your favourite folders (the save window opens inside the one you
         // pick) and any other folder
@@ -4640,6 +4653,7 @@ class MainActivity : ComponentActivity() {
         toast(if (isSave) "Saving…" else "Exporting…")
         lifecycleScope.launch {
             var retryWithPicker = false
+            var closeNow = false
             try {
                 withContext(Dispatchers.IO) { Exporter.writeTo(applicationContext, job, uri) }
                 if (isSave) {
@@ -4672,6 +4686,10 @@ class MainActivity : ComponentActivity() {
                     val where = withContext(Dispatchers.IO) { folderNameOf(finalUri) }
                     val head = if (renameFailed) "Saved, but this location doesn't allow renaming" else "Saved"
                     showNotice(head, d.name, where?.let { "in $it" })
+                    // saved as part of closing: close now (unless something changed while it was saving)
+                    if (wantsCloseAfterSave(d)) {
+                        if (!d.unsaved) closeNow = true else toast("Changed while saving · not closed")
+                    }
                 } else {
                     if (only != null) pagesPanel.endSelection()
                     toast("Exported")
@@ -4686,11 +4704,13 @@ class MainActivity : ComponentActivity() {
                     markDirty(d)
                     retryWithPicker = true
                 } else {
+                    if (isSave) closeAfterSave.remove(d.id)
                     toast((if (isSave) "Save" else "Export") + " failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             } finally {
                 d.busy = false
             }
+            if (closeNow && docs.contains(d) && !d.closed) closeDoc(d)
             if (retryWithPicker && !d.closed) {
                 toast("Choose where to save")
                 pickSaveLocation(d)
