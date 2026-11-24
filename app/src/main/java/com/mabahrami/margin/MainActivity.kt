@@ -4337,11 +4337,27 @@ class MainActivity : ComponentActivity() {
                 if (active === d && idx >= 0) askNewPage(idx + 1)
             })
             items.add(GItem("Delete this page", color = 0xFFFF453A.toInt()) {
-                val idx = d.pages.indexOf(pt.page)
-                if (active === d) {
-                    if (idx >= 0 && pdfView.deletePage(idx)) toast("Page ${idx + 1} deleted (Undo brings it back)")
-                    else toast("Can't delete the only page")
+                val page = pt.page
+                val idx = d.pages.indexOf(page)
+                if (active !== d || idx < 0) return@GItem
+                if (d.pageCount <= 1) {
+                    toast("Can't delete the only page")
+                    return@GItem
                 }
+                // ask first: a page can hold a lot of work
+                ZenBuilder()
+                    .setTitle("Delete page ${idx + 1}?")
+                    .setMessage("Everything on it goes too. Undo brings it back.")
+                    .setPositiveButton("Delete") { _, _ ->
+                        val at = d.pages.indexOf(page) // it may have moved meanwhile
+                        if (active === d && at >= 0) {
+                            if (pdfView.deletePage(at)) toast("Page ${at + 1} deleted (Undo brings it back)")
+                            else toast("Can't delete the only page")
+                        }
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .create()
+                    .let { compactShow(it, 360) }
             })
             showGenieMenu(pressAnchor, items)
         }
