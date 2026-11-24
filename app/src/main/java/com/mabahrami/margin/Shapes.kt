@@ -157,14 +157,19 @@ object Shapes {
             val along = if (s < 2) vs[k] else us[k]
             spans[s][0] = min(spans[s][0], along); spans[s][1] = max(spans[s][1], along)
         }
+        // the stroke runs along the sides; one (usually a short side where the stroke stopped early) may be
+        // missing or only partly drawn: it's then placed at the edge of the box
+        val good = BooleanArray(4)
         for (j in 0..3) {
-            if (sides[j].size < 2) return null
             val full = if (j < 2) v1 - v0 else u1 - u0
-            if (spans[j][1] - spans[j][0] < 0.4f * full) return null // the stroke really runs along every side
+            good[j] = sides[j].size >= 2 && spans[j][1] - spans[j][0] >= 0.4f * full
         }
+        if (good.count { it } < 3) return null
         fun median(l: ArrayList<Float>): Float { l.sort(); return l[l.size / 2] }
-        var a0 = median(sides[0]); var a1 = median(sides[1])
-        var b0 = median(sides[2]); var b1 = median(sides[3])
+        var a0 = if (good[0]) median(sides[0]) else u0
+        var a1 = if (good[1]) median(sides[1]) else u1
+        var b0 = if (good[2]) median(sides[2]) else v0
+        var b1 = if (good[3]) median(sides[3]) else v1
         if (a1 - a0 < minSize * 0.3f) { a0 = u0; a1 = u1 }
         if (b1 - b0 < minSize * 0.3f) { b0 = v0; b1 = v1 }
         // goes round about once (not a scribble filling the box)

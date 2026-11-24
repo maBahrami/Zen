@@ -170,12 +170,20 @@ object Exporter {
 
     private fun openOut(ctx: Context, uri: Uri): OutputStream {
         val cr = ctx.contentResolver
+        // "wt" (write + truncate) first. Some storage apps don't know it: then "rwt", and only last plain "w",
+        // which on some of them doesn't cut the old content off (a shorter new file would end in old bytes)
         val s = try {
             cr.openOutputStream(uri, "wt")
         } catch (e: SecurityException) {
             throw e
         } catch (e: Exception) {
-            cr.openOutputStream(uri, "w")
+            try {
+                cr.openOutputStream(uri, "rwt")
+            } catch (e2: SecurityException) {
+                throw e2
+            } catch (e2: Exception) {
+                cr.openOutputStream(uri, "w")
+            }
         }
         return s ?: throw IOException("Can't write to the chosen location")
     }
