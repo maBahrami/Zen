@@ -5151,7 +5151,7 @@ class MainActivity : ComponentActivity() {
             lateinit var dlg: AlertDialog
             if (recent.isNotEmpty()) {
                 box.addView(TextView(this@MainActivity).apply {
-                    text = "RECENT · tap one to paste it"
+                    this.text = "RECENT · tap one to paste it"
                     textSize = 11f
                     setTextColor(TEXT_DIM)
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
