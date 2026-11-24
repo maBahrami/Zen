@@ -4116,8 +4116,15 @@ class MainActivity : ComponentActivity() {
             if (thisPageOnly && page != null) d.leftOf(page) else d.marginL,
             if (thisPageOnly && page != null) d.rightOf(page) else d.marginR,
         )
-        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(230)).apply {
-            bottomMargin = dp(10)
+        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(280)).apply {
+            bottomMargin = dp(4)
+        })
+        box.addView(TextView(this).apply {
+            text = "Drag the blue edges to set each margin."
+            textSize = 12f
+            setTextColor(TEXT_DIM)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(8))
         })
         if (page != null && !page.isBlank) {
             lifecycleScope.launch {
@@ -4146,8 +4153,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        lateinit var left: SeekBar
-        lateinit var right: SeekBar
         var marginPaper = if (thisPageOnly && page != null) d.marginPaperOf(page) else d.marginPaper
         preview.setPaper(marginPaper)
         val paperBox = FrameLayout(this)
@@ -4159,33 +4164,6 @@ class MainActivity : ComponentActivity() {
             }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL))
         }
         buildPaperSegment()
-        fun row(title: String, init: Float): SeekBar {
-            val label = TextView(this).apply { textSize = 14f; setTextColor(TEXT) }
-            val sb = SeekBar(this).apply {
-                max = 60 // 0..600 pt in 10 pt steps
-                progressTintList = ColorStateList.valueOf(ACCENT)
-                thumbTintList = ColorStateList.valueOf(Color.WHITE)
-            }
-            sb.progress = (init / 10f).roundToInt().coerceIn(0, 60)
-            label.text = "$title  ${sb.progress * 10} pt"
-            sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar, p: Int, fromUser: Boolean) {
-                    label.text = "$title  ${p * 10} pt"
-                    preview.setMargins(left.progress * 10f, right.progress * 10f)
-                }
-                override fun onStartTrackingTouch(s: SeekBar) {}
-                override fun onStopTrackingTouch(s: SeekBar) {}
-            })
-            box.addView(label)
-            box.addView(sb, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(8)
-            })
-            return sb
-        }
-
-        left = row("Left", if (thisPageOnly && page != null) d.leftOf(page) else d.marginL)
-        right = row("Right", if (thisPageOnly && page != null) d.rightOf(page) else d.marginR)
-
         fun styleSegment() {
             for ((v, on) in listOf(segAll to !thisPageOnly, segOne to thisPageOnly)) {
                 v.background = if (on) rounded(0xFF636366.toInt(), 8) else null
@@ -4194,16 +4172,8 @@ class MainActivity : ComponentActivity() {
         }
         fun switchScope(one: Boolean) {
             if (one && page == null) return
+            // the chosen margins and paper stay as they are: only where they'll apply changes
             thisPageOnly = one
-            // show the values that apply to the chosen scope
-            val l = if (one && page != null) d.leftOf(page) else d.marginL
-            val r = if (one && page != null) d.rightOf(page) else d.marginR
-            left.progress = (l / 10f).roundToInt().coerceIn(0, 60)
-            right.progress = (r / 10f).roundToInt().coerceIn(0, 60)
-            preview.setMargins(left.progress * 10f, right.progress * 10f)
-            marginPaper = if (one && page != null) d.marginPaperOf(page) else d.marginPaper
-            preview.setPaper(marginPaper)
-            buildPaperSegment()
             styleSegment()
         }
         segAll.setOnClickListener { switchScope(false) }
@@ -4229,8 +4199,8 @@ class MainActivity : ComponentActivity() {
             .setView(box)
             .setPositiveButton("Apply") { _, _ ->
                 if (docs.contains(d) && active === d) {
-                    if (thisPageOnly && page != null) pdfView.setPageMargins(d.pages.indexOf(page), left.progress * 10f, right.progress * 10f, marginPaper)
-                    else pdfView.setMargins(left.progress * 10f, right.progress * 10f, marginPaper)
+                    if (thisPageOnly && page != null) pdfView.setPageMargins(d.pages.indexOf(page), preview.left, preview.right, marginPaper)
+                    else pdfView.setMargins(preview.left, preview.right, marginPaper)
                 }
             }
             .setNegativeButton("Cancel", null)
