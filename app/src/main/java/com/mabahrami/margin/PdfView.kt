@@ -376,7 +376,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     var onSidePlus: ((page: Int, right: Boolean) -> Unit)? = null
 
     /** Distance (screen px) of the side + from the page's outer edge (its margin included). */
-    private val sidePlusOff = 14f * density
+    private val sidePlusOff: Float get() = 14f * density
 
     /** Page whose side + is at (sx, sy) on screen: index * 2 (+1 for the right side), else -1. */
     private fun sidePlusAt(d: Doc, sx: Float, sy: Float): Int {
