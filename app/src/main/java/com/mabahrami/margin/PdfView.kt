@@ -757,7 +757,6 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     fun setDoc(d: Doc?) {
         cancelZoomAnim()
         lastTapAt = 0L
-        lastTwoTapAt = 0L
         resetPull(animate = false)
         lastDrawTy = Float.NaN
         lastScrollAt = 0L
@@ -2514,19 +2513,10 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return true
     }
 
-    // ---- double taps: one finger fits the page's width, two fingers fit the whole page with its margins ----
+    // ---- double tap: fits the page's width; another double tap there shows the whole page with its margins ----
     private var lastTapAt = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
-    private var lastTwoTapAt = 0L
-    private var lastTwoX = 0f
-    private var lastTwoY = 0f
-    /** This touch can still count as a two-finger tap (fingers landed together and haven't moved). */
-    private var twoTapOk = false
-    private var navPointers = 0
-    private var twoMidX = 0f
-    private var twoMidY = 0f
-    private val tapStart = android.util.SparseArray<FloatArray>()
     private var zoomAnim: android.animation.ValueAnimator? = null
     /** Time from the first tap's release to the second tap's release. */
     private val doubleTapMs = ViewConfiguration.getDoubleTapTimeout().toLong() + 150L
@@ -2552,24 +2542,30 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         return best
     }
 
-    /** One-finger double tap: the page's own width (no margins) fills the screen, centred; the tapped height stays put. */
-    private fun fitPageWidth(d: Doc, x: Float, y: Float) {
+    /**
+     * Double tap: the page's own width (no margins) fills the screen, centred, and the tapped height stays put.
+     * If the page is already shown that way, the whole page with its margins is shown instead.
+     */
+    private fun onDoubleTap(d: Doc, x: Float, y: Float) {
         if (d.pageCount == 0 || width <= 0 || tops.isEmpty()) return
         if (d.zoomLocked) { onZoomLocked?.invoke(); return }
         val i = pageNear(d, (y - d.ty) / d.scale)
         val pw = d.pages[i].w.toFloat()
         if (pw <= 0f) return
-        if (i in shifts.indices) shifts[i] = 0f
         val ns = ((width - 2 * edgePx) / pw).coerceIn(minScale(), MAX_SCALE)
         val cx = lefts[i] + mlOf(d, i) + pw / 2f
+        // already fitted to the width (same zoom, page centred): show the whole page
+        val sx = d.tx + (pl(i) + mlOf(d, i) + pw / 2f) * d.scale
+        if (abs(d.scale - ns) <= ns * 0.02f && abs(sx - width / 2f) <= edgePx) {
+            fitWholePage(d, i)
+            return
+        }
+        if (i in shifts.indices) shifts[i] = 0f
         animateView(d, ns, width / 2f - cx * ns, y - (y - d.ty) / d.scale * ns)
     }
 
-    /** Two-finger double tap: the whole page with its margins fits on screen, centred. */
-    private fun fitWholePage(d: Doc, x: Float, y: Float) {
-        if (d.pageCount == 0 || width <= 0 || tops.isEmpty()) return
-        if (d.zoomLocked) { onZoomLocked?.invoke(); return }
-        val i = pageNear(d, (y - d.ty) / d.scale)
+    /** The whole page [i] with its margins fits on screen, centred. */
+    private fun fitWholePage(d: Doc, i: Int) {
         val fw = pageFullW(d, i)
         val ph = d.pages[i].h.toFloat()
         val availH = height - topPx - edgePx
@@ -2661,10 +2657,6 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                     beginPen(d, e, 0)
                 } else {
                     mode = MODE_NAV
-                    tapStart.clear()
-                    tapStart.put(e.getPointerId(0), floatArrayOf(e.x, e.y))
-                    navPointers = 1
-                    twoTapOk = true
                     slidMoved = false
                     slidePage = if (floatLayout) pageAt(d, (e.x - d.tx) / d.scale, (e.y - d.ty) / d.scale) else -1
                     if (slidePage >= 0 && pageFullW(d, slidePage) <= d.pages[slidePage].w + 0.01f) slidePage = -1
@@ -2693,13 +2685,6 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         invalidate()
                     } else {
                         multiTouch = true
-                        navPointers = max(navPointers, e.pointerCount)
-                        // a two-finger tap: the second finger lands right after the first, before anything moved
-                        if (e.pointerCount == 2 && !movedPastSlop && SystemClock.uptimeMillis() - downTime < 250L) {
-                            tapStart.put(e.getPointerId(idx), floatArrayOf(e.getX(idx), e.getY(idx)))
-                            twoMidX = (e.getX(0) + e.getX(1)) / 2f
-                            twoMidY = (e.getY(0) + e.getY(1)) / 2f
-                        } else twoTapOk = false
                         velocity?.addMovement(e)
                         scaleDetector.onTouchEvent(e)
                         computeFocus(e, -1)
@@ -2757,12 +2742,6 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                 }
 
                 MODE_NAV -> {
-                    if (twoTapOk) {
-                        for (k in 0 until e.pointerCount) {
-                            val st = tapStart.get(e.getPointerId(k)) ?: continue
-                            if (hypot(e.getX(k) - st[0], e.getY(k) - st[1]) > touchSlop) { twoTapOk = false; break }
-                        }
-                    }
                     if (!movedPastSlop && hypot(e.x - downX, e.y - downY) > touchSlop) {
                         movedPastSlop = true
                         removeCallbacks(longPress)
@@ -2851,25 +2830,13 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
                         val quick = SystemClock.uptimeMillis() - downTime < longPressMs
                         val now = SystemClock.uptimeMillis()
                         if (!multiTouch && !movedPastSlop && !longPressFired && quick) {
-                            lastTwoTapAt = 0L
                             if (now - lastTapAt < doubleTapMs && hypot(e.x - lastTapX, e.y - lastTapY) < doubleTapSlop) {
                                 lastTapAt = 0L
-                                fitPageWidth(d, e.x, e.y)
+                                onDoubleTap(d, e.x, e.y)
                             } else if (onTap(d, e.x, e.y)) {
                                 lastTapAt = now; lastTapX = e.x; lastTapY = e.y
                             } else lastTapAt = 0L
-                        } else if (multiTouch && twoTapOk && navPointers == 2 && !longPressFired && quick) {
-                            lastTapAt = 0L
-                            if (now - lastTwoTapAt < doubleTapMs && hypot(twoMidX - lastTwoX, twoMidY - lastTwoY) < doubleTapSlop * 2f) {
-                                lastTwoTapAt = 0L
-                                fitWholePage(d, twoMidX, twoMidY)
-                            } else {
-                                lastTwoTapAt = now; lastTwoX = twoMidX; lastTwoY = twoMidY
-                            }
-                        } else {
-                            lastTapAt = 0L
-                            lastTwoTapAt = 0L
-                        }
+                        } else lastTapAt = 0L
                         resetPull(animate = true)
                         pullDone = false
                         invalidate()
@@ -2906,7 +2873,6 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
 
     private fun beginPen(d: Doc, e: MotionEvent, idx: Int) {
         lastTapAt = 0L // the pen in between: two finger taps around it aren't a double tap
-        lastTwoTapAt = 0L
         penPointerId = e.getPointerId(idx)
         if (penBtnDown || (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
             penBtnDown = true
