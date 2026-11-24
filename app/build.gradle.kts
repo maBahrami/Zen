@@ -11,8 +11,8 @@ android {
         applicationId = "com.mabahrami.margin"
         minSdk = 30
         targetSdk = 34
-        versionCode = 19
-        versionName = "1.4"
+        versionCode = 20
+        versionName = "1.5"
     }
 
     buildTypes {
