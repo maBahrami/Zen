@@ -622,24 +622,42 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     // ---- page bitmap cache, keyed by (source file, page) ----
     private class PageBmp(val bmp: Bitmap, val scale: Float)
 
-    private val cache = object : LruCache<Int, PageBmp>(CACHE_BYTES) {
-        override fun sizeOf(key: Int, value: PageBmp): Int = value.bmp.byteCount
+    private val cache = object : LruCache<Long, PageBmp>(CACHE_BYTES) {
+        override fun sizeOf(key: Long, value: PageBmp): Int = value.bmp.byteCount
     }
-    private val pending = HashSet<Int>()
+    private val pending = HashSet<Long>()
     private var generation = 0
 
     // ---- close-ups: a whole page can only be rendered up to MAX_BITMAP_SIDE px, so when zoomed in further
     // the visible part of each page is rendered separately at the exact zoom and drawn over it ----
     private class Detail(val bmp: Bitmap, val scale: Float, val l: Float, val t: Float, val r: Float, val b: Float)
 
-    private val detailCache = object : LruCache<Int, Detail>(DETAIL_BYTES) {
-        override fun sizeOf(key: Int, value: Detail): Int = value.bmp.byteCount
+    private val detailCache = object : LruCache<Long, Detail>(DETAIL_BYTES) {
+        override fun sizeOf(key: Long, value: Detail): Int = value.bmp.byteCount
     }
-    private val detailPending = HashSet<Int>()
+    private val detailPending = HashSet<Long>()
     private val detailDst = RectF()
 
-    /** Cache key of a page's bitmap; light and dark versions are cached separately. */
-    private fun pageKey(p: Page, dark: Boolean) = (p.file * 100_000 + p.src) * 2 + (if (dark) 1 else 0)
+    /**
+     * Cache key of a page's bitmap: its document, source file and page; light and dark versions are cached
+     * separately. The document is part of the key, so the pages of other open files stay cached while
+     * switching tabs (the memory limit decides what goes first: the least recently seen).
+     */
+    private fun pageKey(d: Doc, p: Page, dark: Boolean): Long =
+        (docNum(d).toLong() shl 40) or (((p.file.toLong() * 100_000L + p.src) * 2L) + (if (dark) 1L else 0L))
+
+    /** A small number for each document this view has shown (for the cache keys). */
+    private val docNums = java.util.WeakHashMap<Doc, Int>()
+    private var nextDocNum = 1
+    private fun docNum(d: Doc): Int = docNums.getOrPut(d) { nextDocNum++ }
+
+    /** A file was closed: drop its pages from the caches now, instead of waiting for them to age out. */
+    fun forgetDoc(d: Doc) {
+        val n = docNums[d] ?: return
+        for (k in cache.snapshot().keys) if ((k ushr 40).toInt() == n) cache.remove(k)
+        for (k in detailCache.snapshot().keys) if ((k ushr 40).toInt() == n) detailCache.remove(k)
+        photoRects.keys.removeIf { it.startsWith(d.id + ":") }
+    }
 
     // ---- dark view ----
     /** Dark view of the current document (set at the start of every draw). */
@@ -904,21 +922,15 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         mode = MODE_NONE
         velocity?.recycle()
         velocity = null
-        cache.evictAll()
-        pending.clear()
-        detailCache.evictAll()
-        detailPending.clear()
-        imgCache.evictAll()
-        imgPending.clear()
-        generation++
-        // switching to another file: its pages fade in softly instead of popping
-        if (doc != null && d != null && doc !== d && isShown) {
+        // the rendered pages stay cached (keyed by document), so switching back to a file shows it at once;
+        // renders still under way for the file being left are kept too (they belong to it)
+        // switching to a file this view hasn't shown yet: its pages fade in softly instead of popping
+        if (doc != null && d != null && doc !== d && isShown && !docNums.containsKey(d)) {
             animate().cancel()
             alpha = 0.25f
             animate().alpha(1f).setDuration(200).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
         }
         if (doc !== d) {
-            photoRects.clear()
             try {
                 renderExec.execute { closePhotoPdf() }
             } catch (ignored: Exception) {
@@ -1890,9 +1902,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
             val ox = left + pl
             if (!page.isBlank) {
                 dst.set(ox, top, ox + page.w, bottom)
-                val pb = cache.get(pageKey(page, dk))
+                val pb = cache.get(pageKey(d, page, dk))
                 if (pb != null) canvas.drawBitmap(pb.bmp, null, dst, bmpPaint)
-                else cache.get(pageKey(page, !dk))?.let { canvas.drawBitmap(it.bmp, null, dst, flipPaint) }
+                else cache.get(pageKey(d, page, !dk))?.let { canvas.drawBitmap(it.bmp, null, dst, flipPaint) }
                 val want = bucketFor(page, s)
                 if (pb == null || (!interacting && abs(pb.scale - want) > 0.01f)) requestRender(d, page, want)
                 if (s > want * 1.05f) drawDetail(d, canvas, page, i, ox, top, s, dk)
@@ -2214,7 +2226,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     private fun requestRender(d: Doc, page: Page, scale: Float) {
         if (page.src < 0) return
         val dark = d.dark
-        val key = pageKey(page, dark)
+        val key = pageKey(d, page, dark)
         if (!pending.add(key)) return
         val gen = generation
         val w = max(1, (page.w * scale).toInt())
@@ -2299,7 +2311,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val vr = ((width - d.tx) / s - ox).coerceIn(0f, page.w.toFloat())
         val vb = ((height - d.ty) / s - top).coerceIn(0f, page.h.toFloat())
         if (vr <= vl || vb <= vt) return
-        val key = pageKey(page, dk)
+        val key = pageKey(d, page, dk)
         val det = detailCache.get(key)
         if (det != null && !det.bmp.isRecycled) {
             detailDst.set(ox + det.l, top + det.t, ox + det.r, top + det.b)
@@ -2316,7 +2328,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     }
 
     private fun requestDetail(d: Doc, page: Page, s: Float, dark: Boolean, l: Float, t: Float, r: Float, b: Float) {
-        val key = pageKey(page, dark)
+        val key = pageKey(d, page, dark)
         if (!detailPending.add(key)) return
         val gen = generation
         val w = ((r - l) * s).toInt().coerceIn(1, 6000)

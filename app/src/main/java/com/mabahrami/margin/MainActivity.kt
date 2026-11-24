@@ -2768,6 +2768,9 @@ class MainActivity : ComponentActivity() {
             ungroup(p, keep = if (p.left === d) p.right else p.left)
         }
         d.closed = true
+        paneA.forgetDoc(d) // its pages leave the caches right away
+        paneB.forgetDoc(d)
+        searchTexts.keys.removeIf { it.startsWith(d.id + "/") }
         val idx = docs.indexOf(d)
         docs.remove(d)
         dirtyDocs.remove(d)
