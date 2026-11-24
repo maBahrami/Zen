@@ -2124,6 +2124,57 @@ class MainActivity : ComponentActivity() {
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
+    private var noticeView: View? = null
+
+    /**
+     * A notice like a toast, but sized to its text (system toasts cut off after two lines): a bold title and
+     * a few lines under it, near the bottom of the screen for 4 seconds. Tap to close it early.
+     */
+    private fun showNotice(title: String, vararg lines: String?) {
+        val stage = stageView ?: run { toast(title); return }
+        noticeView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(18), dp(10), dp(18), dp(11))
+            background = glass(16)
+            elevation = dp(10).toFloat()
+            alpha = 0f
+            translationY = dp(12).toFloat()
+            isClickable = true
+        }
+        box.addView(TextView(this).apply {
+            text = title
+            textSize = 14f
+            setTextColor(TEXT)
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        })
+        for (l in lines) {
+            if (l.isNullOrEmpty()) continue
+            box.addView(TextView(this).apply {
+                text = l
+                textSize = 13f
+                setTextColor(TEXT_DIM)
+                gravity = Gravity.CENTER
+                maxWidth = dp(460)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+        }
+        fun hide() {
+            box.animate().cancel()
+            box.animate().alpha(0f).translationY(dp(12).toFloat()).setDuration(180)
+                .withEndAction { (box.parent as? ViewGroup)?.removeView(box); if (noticeView === box) noticeView = null }.start()
+        }
+        box.setOnClickListener { hide() }
+        stage.addView(box, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+        ).apply { bottomMargin = dp(72) })
+        noticeView = box
+        box.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        box.postDelayed({ if (box.parent != null) hide() }, 4000)
+    }
+
     // ======================= tabs =======================
 
     /**
@@ -4320,8 +4371,7 @@ class MainActivity : ComponentActivity() {
                     // say what was saved and where: the file's name, then its folder (when it can be told)
                     val where = withContext(Dispatchers.IO) { folderNameOf(finalUri) }
                     val head = if (renameFailed) "Saved, but this location doesn't allow renaming" else "Saved"
-                    Toast.makeText(this@MainActivity,
-                        head + "\n" + d.name + (if (where != null) "\nin $where" else ""), Toast.LENGTH_LONG).show()
+                    showNotice(head, d.name, where?.let { "in $it" })
                 } else {
                     if (only != null) pagesPanel.endSelection()
                     toast("Exported")
