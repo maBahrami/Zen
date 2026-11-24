@@ -663,7 +663,8 @@ class MainActivity : ComponentActivity() {
         lateinit var fPages: ImageView
         fInsert = iconButton(R.drawable.ic_plus, "Insert") { showInsertMenu(fInsert) }
         fPages = iconButton(R.drawable.ic_pages, "Pages") { togglePages() }
-        val fMargins = iconButton(R.drawable.ic_margins, "Margins") { showMargins() }
+        lateinit var fSave: ImageView
+        fSave = iconButton(R.drawable.ic_save, "Save or export") { showSaveMenu(fSave) }
 
         penBtn = iconButton(R.drawable.ic_pen, "Pen (tap again for line style)") {
             // first tap selects the pen (leaving eraser / lasso / highlighter); a second tap opens line styles
@@ -746,7 +747,7 @@ class MainActivity : ComponentActivity() {
         redoBtn = iconButton(R.drawable.ic_redo, "Redo") { pdfView.redo() }
         palette.addView(undoBtn, palLp())
         palette.addView(redoBtn, palLp())
-        // focus mode only, next to the pen toolbar: a pill with Insert · Pages · Margins, then Exit on its own
+        // focus mode only, next to the pen toolbar: a pill with Insert · Pages · Save, then Exit on its own
         val fExit = iconButton(R.drawable.ic_unfocus, "Exit focus mode") { setFocusLevel(0) }
         fun focusPill(vararg views: View): LinearLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -756,7 +757,7 @@ class MainActivity : ComponentActivity() {
             elevation = dp(6).toFloat()
             for ((k, v) in views.withIndex()) addView(v, palLp(if (k == 0) 0 else 1))
         }
-        val pagePill = focusPill(fInsert, fPages, fMargins)
+        val pagePill = focusPill(fInsert, fPages, fSave)
         val exitPill = focusPill(fExit).apply { setPadding(dp(2), dp(2), dp(2), dp(2)); gravity = Gravity.CENTER }
         val paletteRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
