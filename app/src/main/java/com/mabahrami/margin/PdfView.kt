@@ -433,7 +433,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
     var onSidePlus: ((page: Int, right: Boolean) -> Unit)? = null
 
     /** Distance (screen px) of the side + from the page's outer edge (its margin included). */
-    private val sidePlusOff: Float get() = 14f * density
+    private val sidePlusOff: Float get() = 8f * density
 
     /** Page whose side + is at (sx, sy) on screen: index * 2 (+1 for the right side), else -1. */
     private fun sidePlusAt(d: Doc, sx: Float, sy: Float): Int {
@@ -485,10 +485,14 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         if (i >= 0) {
             val off = sidePlusOff / s
             val cy = sidePlusY(d, i)
-            for (sx in floatArrayOf(pl(i) - off, pl(i) + pageFullW(d, i) + off)) {
-                canvas.drawLine(sx - arm, cy, sx + arm, cy, gapPlusArm)
-                canvas.drawLine(sx, cy - arm, sx, cy + arm, gapPlusArm)
-            }
+            // "<" on the left, ">" on the right: the page can grow that way (a margin)
+            val hx = arm * 0.55f
+            val lx = pl(i) - off
+            canvas.drawLine(lx + hx, cy - arm, lx - hx, cy, gapPlusArm)
+            canvas.drawLine(lx - hx, cy, lx + hx, cy + arm, gapPlusArm)
+            val rx = pl(i) + pageFullW(d, i) + off
+            canvas.drawLine(rx - hx, cy - arm, rx + hx, cy, gapPlusArm)
+            canvas.drawLine(rx + hx, cy, rx - hx, cy + arm, gapPlusArm)
         }
     }
     /** Where the "+" of the pull indicator was last drawn (view px), so the page window can grow out of it. */
