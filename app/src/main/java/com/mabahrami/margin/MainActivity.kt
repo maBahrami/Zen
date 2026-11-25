@@ -587,9 +587,28 @@ class MainActivity : ComponentActivity() {
         lateinit var openBtn: ImageView
         openBtn = barIcon(R.drawable.ic_open, "Open") { showOpenMenu(openBtn) }
         bar.addView(pill(openBtn, barIcon(R.drawable.ic_new, "New note") { askNewNote() }), pillLp(0))
-        tabBar = LinearLayout(this).apply {
+        // the tabs, with a dim vertical line between files. The lines are drawn, not views, so each tab stays
+        // one child of the bar (the reordering and scrolling code counts on that). None next to the active tab
+        // (its pill already sets it apart), and none while a tab is being dragged.
+        val sepPaint = android.graphics.Paint().apply { color = 0x2EFFFFFF }
+        tabBar = object : LinearLayout(this) {
+            override fun dispatchDraw(canvas: android.graphics.Canvas) {
+                super.dispatchDraw(canvas)
+                if (draggingTab != null) return
+                val activeAt = tabUnits().indexOfFirst { u -> u.any { it === active } }
+                val h = dp(14).toFloat()
+                for (k in 1 until childCount) {
+                    if (k == activeAt || k - 1 == activeAt) continue
+                    val prev = getChildAt(k - 1)
+                    val x = ((prev.right + getChildAt(k).left) / 2).toFloat()
+                    val cy = height / 2f
+                    canvas.drawRect(x, cy - h / 2f, x + 1f, cy + h / 2f, sepPaint)
+                }
+            }
+        }.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setWillNotDraw(false)
         }
         tabScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
