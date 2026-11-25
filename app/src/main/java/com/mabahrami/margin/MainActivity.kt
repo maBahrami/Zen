@@ -1634,13 +1634,16 @@ class MainActivity : ComponentActivity() {
         return 0
     }
 
-    /** Drop-down under the colour strip: one column per main colour, with its other shades. */
+    /**
+     * Drop-down under the colour strip, exactly as wide as the strip: one column under each main colour,
+     * with its other shades.
+     */
     private fun showShades(anchor: View) {
         val dark = active?.dark == true && !hlMode
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = glass(14)
+            setPadding(0, dp(6), 0, dp(6))
+            background = glass(8)
             elevation = dp(10).toFloat()
         }
         lateinit var pop: GeniePop
@@ -1650,21 +1653,23 @@ class MainActivity : ComponentActivity() {
                 val isCurrent = c == pdfView.penColor
                 col.addView(View(this).apply {
                     background = GradientDrawable().apply {
-                        cornerRadius = dp(7).toFloat()
+                        cornerRadius = dp(4).toFloat()
                         setColor(if (dark) Dark.ink(c) else c) // as it will look on the page
                         if (isCurrent) setStroke(dp(2), Color.WHITE)
                     }
                     contentDescription = "Colour"
                     isClickable = true
-                    foreground = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 7))
+                    foreground = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 4))
                     setOnClickListener { pop.dismiss { setColor(c) } }
-                }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { if (n > 0) topMargin = dp(6) })
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)).apply {
+                    if (n > 0) topMargin = dp(4)
+                    marginStart = dp(2); marginEnd = dp(2)
+                })
             }
-            card.addView(col, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                if (k > 0) marginStart = dp(6)
-            })
+            // each column as wide as the swatch above it
+            card.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        pop = GeniePop(card)
+        pop = GeniePop(card, widthPx = anchor.width)
         pop.showAsDropDown(anchor, 0, dp(6))
     }
 
