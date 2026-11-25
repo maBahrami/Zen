@@ -65,13 +65,14 @@ class ShadeSlider(
     private val r = RectF()
     private var shaderFor = -1
 
-    private val pad get() = 7f * density // room for the thumb at the ends
+    /** Room at the ends: the whole thumb (its ring and shadow included) stays inside the slider. */
+    private val pad get() = width * 0.42f + 3f * density
 
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
-        if (shaderFor != height) {
-            shaderFor = height
+        if (shaderFor != height + width * 100000) {
+            shaderFor = height + width * 100000
             val n = 12
             val colors = IntArray(n) { shown(colorAt(it / (n - 1f))) }
             bar.shader = LinearGradient(0f, pad, 0f, h - pad, colors, null, Shader.TileMode.CLAMP)
