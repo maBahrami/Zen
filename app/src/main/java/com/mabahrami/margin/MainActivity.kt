@@ -734,7 +734,11 @@ class MainActivity : ComponentActivity() {
         }
         for (c in COLORS) {
             val v = View(this)
-            v.setOnClickListener { setColor(c) }
+            // first tap: this colour; tapping the colour in use again: its other shades
+            v.setOnClickListener {
+                if (familyOf(pdfView.penColor) == c && !pdfView.eraserMode && !pdfView.lassoMode) showShades(v.parent as? View ?: v)
+                else setColor(c)
+            }
             swatches.add(c to v)
             strip.addView(v, LinearLayout.LayoutParams(dp(24), dp(28)))
         }
@@ -1027,7 +1031,8 @@ class MainActivity : ComponentActivity() {
         for ((k, pair) in swatches.withIndex()) {
             val (c, v) = pair
             // with the eraser or the lasso, no colour is in use
-            val selected = c == pdfView.penColor && !pdfView.eraserMode && !pdfView.lassoMode
+            // (a shade picked from the drop-down counts as its main colour)
+            val selected = c == familyOf(pdfView.penColor) && !pdfView.eraserMode && !pdfView.lassoMode
             // (highlights keep their own colours in dark view, so the highlighter palette doesn't change)
             val shown = if (dark && !hlMode) Dark.ink(c) else c
             val first = k == 0
@@ -1604,6 +1609,63 @@ class MainActivity : ComponentActivity() {
                 toast("Paste failed: ${t.message}")
             }
         }
+    }
+
+    // ---------------- shades: more colours under each main colour ----------------
+
+    /** The other shades of a main colour, lightest first (4 of them). Grey tones for black. */
+    private fun shadesOf(main: Int): IntArray {
+        val hsl = FloatArray(3)
+        androidx.core.graphics.ColorUtils.colorToHSL(main, hsl)
+        if (hsl[1] < 0.1f || hsl[2] < 0.08f) {
+            // black: greys
+            return intArrayOf(0xFFC7C7CC.toInt(), 0xFF8E8E93.toInt(), 0xFF636366.toInt(), 0xFF3A3A3C.toInt())
+        }
+        return floatArrayOf(0.80f, 0.66f, 0.36f, 0.24f).map { l ->
+            // lighter shades a little softer, darker ones keep their strength
+            val sat = if (l > 0.5f) hsl[1] * 0.85f else hsl[1]
+            androidx.core.graphics.ColorUtils.HSLToColor(floatArrayOf(hsl[0], sat, l))
+        }.toIntArray()
+    }
+
+    /** Which main colour [c] belongs to (itself, or the main colour of one of its shades), or 0. */
+    private fun familyOf(c: Int): Int {
+        for (m in COLORS) if (m == c || shadesOf(m).contains(c)) return m
+        return 0
+    }
+
+    /** Drop-down under the colour strip: one column per main colour, with its other shades. */
+    private fun showShades(anchor: View) {
+        val dark = active?.dark == true && !hlMode
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = glass(14)
+            elevation = dp(10).toFloat()
+        }
+        lateinit var pop: GeniePop
+        for ((k, main) in COLORS.withIndex()) {
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            for ((n, c) in shadesOf(main).withIndex()) {
+                val isCurrent = c == pdfView.penColor
+                col.addView(View(this).apply {
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(7).toFloat()
+                        setColor(if (dark) Dark.ink(c) else c) // as it will look on the page
+                        if (isCurrent) setStroke(dp(2), Color.WHITE)
+                    }
+                    contentDescription = "Colour"
+                    isClickable = true
+                    foreground = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 7))
+                    setOnClickListener { pop.dismiss { setColor(c) } }
+                }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { if (n > 0) topMargin = dp(6) })
+            }
+            card.addView(col, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                if (k > 0) marginStart = dp(6)
+            })
+        }
+        pop = GeniePop(card)
+        pop.showAsDropDown(anchor, 0, dp(6))
     }
 
     private fun setColor(c: Int) {
