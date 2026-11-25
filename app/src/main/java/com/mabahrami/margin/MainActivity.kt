@@ -732,12 +732,12 @@ class MainActivity : ComponentActivity() {
             clipChildren = false
             clipToPadding = false
         }
-        for (c in COLORS) {
+        for ((k, c) in COLORS.withIndex()) {
             val v = View(this)
-            // first tap: this colour; tapping the colour in use again: its other shades
+            // first tap: the shade this slot shows; tapping the colour in use again: all its shades
             v.setOnClickListener {
                 if (familyOf(pdfView.penColor) == c && !pdfView.eraserMode && !pdfView.lassoMode) showShades(v.parent as? View ?: v)
-                else setColor(c)
+                else setColor(slotColor(k))
             }
             swatches.add(c to v)
             strip.addView(v, LinearLayout.LayoutParams(dp(24), dp(28)))
@@ -1034,7 +1034,7 @@ class MainActivity : ComponentActivity() {
             // (a shade picked from the drop-down counts as its main colour)
             val selected = c == familyOf(pdfView.penColor) && !pdfView.eraserMode && !pdfView.lassoMode
             // (highlights keep their own colours in dark view, so the highlighter palette doesn't change)
-            val shown = if (dark && !hlMode) Dark.ink(c) else c
+            val shown = slotColor(k).let { if (dark && !hlMode) Dark.ink(it) else it }
             val first = k == 0
             val last = k == swatches.size - 1
             v.background = GradientDrawable().apply {
@@ -1382,7 +1382,7 @@ class MainActivity : ComponentActivity() {
         // colours as the palette shows them (black shows white in dark view)
         val dark = active?.dark == true
         // colour ring in the order of the sketch: clockwise from the top
-        val ringOrder = intArrayOf(0, 2, 4, 5, 3, 6, 1).map { COLORS[it] } // black, red, orange, purple, green, yellow, blue
+        val ringOrder = intArrayOf(0, 2, 4, 5, 3, 6, 1).map { slotColor(it) } // black, red, orange, purple, green, yellow, blue (as the palette shows them)
         val colours = ringOrder.map { c ->
             PenWheel.Item(PenWheel.COLOUR, c, null, if (dark && !hlMode) Dark.ink(c) else c, drawing && c == pdfView.penColor)
         }
@@ -1613,6 +1613,13 @@ class MainActivity : ComponentActivity() {
 
     // ---------------- shades: more colours under each main colour ----------------
 
+    /** The shade a palette slot shows (its main colour until another shade is picked); pen and highlighter apart. */
+    private fun slotColor(k: Int): Int {
+        val main = COLORS[k]
+        val c = prefs.getInt((if (hlMode) "hl_slot_" else "slot_") + k, main)
+        return if (familyOf(c) == main) c else main
+    }
+
     /** The other shades of a main colour, lightest first (4 of them). Grey tones for black. */
     private fun shadesOf(main: Int): IntArray {
         val hsl = FloatArray(3)
@@ -1649,7 +1656,10 @@ class MainActivity : ComponentActivity() {
         lateinit var pop: GeniePop
         for ((k, main) in COLORS.withIndex()) {
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            for ((n, c) in shadesOf(main).withIndex()) {
+            // the main colour among its shades, by lightness: two lighter, the main colour, two darker
+            val sh = shadesOf(main)
+            val column = intArrayOf(sh[0], sh[1], main, sh[2], sh[3])
+            for ((n, c) in column.withIndex()) {
                 val isCurrent = c == pdfView.penColor
                 col.addView(View(this).apply {
                     background = GradientDrawable().apply {
@@ -1660,7 +1670,11 @@ class MainActivity : ComponentActivity() {
                     contentDescription = "Colour"
                     isClickable = true
                     foreground = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 4))
-                    setOnClickListener { pop.dismiss { setColor(c) } }
+                    setOnClickListener {
+                        // the palette slot above now shows this shade
+                        prefs.edit().putInt((if (hlMode) "hl_slot_" else "slot_") + k, c).apply()
+                        pop.dismiss { setColor(c) }
+                    }
                 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)).apply {
                     if (n > 0) topMargin = dp(4)
                     marginStart = dp(2); marginEnd = dp(2)
