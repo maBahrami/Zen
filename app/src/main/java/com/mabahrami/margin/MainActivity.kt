@@ -1613,78 +1613,67 @@ class MainActivity : ComponentActivity() {
 
     // ---------------- shades: more colours under each main colour ----------------
 
-    /** The shade a palette slot shows (its main colour until another shade is picked); pen and highlighter apart. */
-    private fun slotColor(k: Int): Int {
-        val main = COLORS[k]
-        val c = prefs.getInt((if (hlMode) "hl_slot_" else "slot_") + k, main)
-        return if (familyOf(c) == main) c else main
-    }
-
-    /** The other shades of a main colour, lightest first (4 of them). Grey tones for black. */
-    private fun shadesOf(main: Int): IntArray {
-        val hsl = FloatArray(3)
-        androidx.core.graphics.ColorUtils.colorToHSL(main, hsl)
-        if (hsl[1] < 0.1f || hsl[2] < 0.08f) {
-            // black: greys
-            return intArrayOf(0xFFC7C7CC.toInt(), 0xFF8E8E93.toInt(), 0xFF636366.toInt(), 0xFF3A3A3C.toInt())
-        }
-        return floatArrayOf(0.80f, 0.66f, 0.36f, 0.24f).map { l ->
-            // lighter shades a little softer, darker ones keep their strength
-            val sat = if (l > 0.5f) hsl[1] * 0.85f else hsl[1]
-            androidx.core.graphics.ColorUtils.HSLToColor(floatArrayOf(hsl[0], sat, l))
-        }.toIntArray()
-    }
+    /** The shade a palette slot shows (its main colour until another shade is chosen); pen and highlighter apart. */
+    private fun slotKey(k: Int) = (if (hlMode) "hl_slot_" else "slot_") + k
+    private fun slotColor(k: Int): Int = prefs.getInt(slotKey(k), COLORS[k])
 
     /** Which main colour [c] belongs to (itself, or the main colour of one of its shades), or 0. */
     private fun familyOf(c: Int): Int {
-        for (m in COLORS) if (m == c || shadesOf(m).contains(c)) return m
+        for ((k, m) in COLORS.withIndex()) if (m == c || slotColor(k) == c) return m
         return 0
     }
 
     /**
-     * Drop-down under the colour strip, exactly as wide as the strip: one column under each main colour,
-     * with its other shades.
+     * Drop-down under the colour strip, exactly as wide as the strip: under each main colour a slider through
+     * its shades (light at the top, dark at the bottom). Moving one changes that slot of the strip and the pen
+     * at once. "Reset to default" puts every slot back to its main colour. Pen and highlighter keep their own.
      */
     private fun showShades(anchor: View) {
         val dark = active?.dark == true && !hlMode
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(6), 0, dp(6))
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, dp(4))
             background = glass(8)
             elevation = dp(10).toFloat()
         }
-        lateinit var pop: GeniePop
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val sliders = ArrayList<ShadeSlider>()
         for ((k, main) in COLORS.withIndex()) {
-            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            // the main colour among its shades, by lightness: two lighter, the main colour, two darker
-            val sh = shadesOf(main)
-            val column = intArrayOf(sh[0], sh[1], main, sh[2], sh[3])
-            for ((n, c) in column.withIndex()) {
-                val isCurrent = c == pdfView.penColor
-                col.addView(View(this).apply {
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(4).toFloat()
-                        setColor(if (dark) Dark.ink(c) else c) // as it will look on the page
-                        if (isCurrent) setStroke(dp(2), Color.WHITE)
-                    }
-                    contentDescription = "Colour"
-                    isClickable = true
-                    foreground = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 4))
-                    setOnClickListener {
-                        // the palette slot above now shows this shade
-                        prefs.edit().putInt((if (hlMode) "hl_slot_" else "slot_") + k, c).apply()
-                        pop.dismiss { setColor(c) }
-                    }
-                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)).apply {
-                    if (n > 0) topMargin = dp(4)
-                    marginStart = dp(2); marginEnd = dp(2)
-                })
+            val sl = ShadeSlider(this, main) { c -> if (dark) Dark.ink(c) else c }
+            sl.setColor(slotColor(k))
+            sl.contentDescription = "Shade"
+            sl.onChange = { c, done ->
+                prefs.edit().putInt(slotKey(k), c).apply()
+                // a lasso selection is recoloured once, on release (not at every step of the drag)
+                if (!pdfView.hasLasso || done) setColor(c) else refreshTool()
             }
-            // each column as wide as the swatch above it
-            card.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            sliders.add(sl)
+            // each slider as wide as the swatch above it
+            row.addView(sl, LinearLayout.LayoutParams(0, dp(150), 1f))
         }
-        pop = GeniePop(card, widthPx = anchor.width)
-        pop.showAsDropDown(anchor, 0, dp(6))
+        box.addView(row)
+        box.addView(TextView(this).apply {
+            text = "Reset to default"
+            textSize = 12f
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
+            maxLines = 1
+            setPadding(dp(4), dp(8), dp(4), dp(6))
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null, rounded(Color.WHITE, 6))
+            isClickable = true
+            setOnClickListener {
+                val fam = familyOf(pdfView.penColor)
+                val e = prefs.edit()
+                for (k in COLORS.indices) e.remove(slotKey(k))
+                e.apply()
+                for ((k, sl) in sliders.withIndex()) sl.setColor(COLORS[k])
+                // the colour in use goes back to its main colour too
+                if (fam != 0 && !pdfView.eraserMode && !pdfView.lassoMode) setColor(fam) else refreshTool()
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = dp(4); marginEnd = dp(4)
+        })
+        GeniePop(box, widthPx = anchor.width).showAsDropDown(anchor, 0, dp(6))
     }
 
     private fun setColor(c: Int) {
