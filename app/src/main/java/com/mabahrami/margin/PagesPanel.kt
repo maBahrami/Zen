@@ -294,8 +294,23 @@ class PagesPanel(context: Context, private val renderExec: ExecutorService) : Li
         updateHeader()
     }
 
+    /**
+     * Brings the current page's thumbnail into the middle of the list. Waits for the list to be laid out first
+     * (right after the panel opens it has no size yet, and a jump then lands nowhere).
+     */
     fun scrollToCurrent() {
-        list.scrollToPosition(current)
+        val target = current
+        fun go() {
+            val lm = list.layoutManager as? GridLayoutManager ?: return
+            if (target !in 0 until (list.adapter?.itemCount ?: 0)) return
+            // a row's height from a thumbnail on screen (or a page-shaped guess), to centre the row
+            val rowH = list.getChildAt(0)?.height?.takeIf { it > 0 } ?: (list.width / 2 * 1.5f).toInt()
+            lm.scrollToPositionWithOffset(target, ((list.height - rowH) / 2).coerceAtLeast(0))
+        }
+        if (list.isLaidOut && list.height > 0) go()
+        list.post {
+            go() // again after layout: the first jump may have been measured before the thumbnails had sizes
+        }
     }
 
     private fun updateHeader() {
