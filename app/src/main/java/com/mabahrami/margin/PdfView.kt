@@ -2853,7 +2853,9 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         val i = pageNear(d, (y - d.ty) / d.scale)
         val pw = d.pages[i].w.toFloat()
         if (pw <= 0f) return
-        val ns = ((width - 2 * edgePx) / pw).coerceIn(minScale(), MAX_SCALE)
+        // a little room on each side, so the + beside the page (margin settings) stays on screen
+        val side = sidePlusOff + 16f * density
+        val ns = ((width - 2 * side) / pw).coerceIn(minScale(), MAX_SCALE)
         val cx = lefts[i] + mlOf(d, i) + pw / 2f
         // already fitted to the width (same zoom, page centred): show the whole page
         val sx = d.tx + (pl(i) + mlOf(d, i) + pw / 2f) * d.scale
