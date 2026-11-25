@@ -77,12 +77,20 @@ class MarginPreview(context: Context, private val pageW: Float, private val page
 
     // fixed layout: the scale leaves room for the largest margin on both sides, so the page doesn't move
     private val labelH get() = 20f * density
+    private val pad get() = 8f * density
     private fun scale(): Float {
-        val pad = 14f * density
         val aw = width - 2 * pad
         val ah = height - 2 * pad - labelH
         if (aw <= 0 || ah <= 0 || pageW <= 0f || pageH <= 0f) return 0f
         return min(aw / (pageW + 2 * MAX), ah / pageH)
+    }
+
+    /** As tall as the page needs at the width given (plus the values below it): no empty bands above and below. */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        val s = if (pageW > 0f) (w - 2 * pad) / (pageW + 2 * MAX) else 0f
+        val want = (pageH * s + 2 * pad + labelH).toInt()
+        setMeasuredDimension(w, resolveSize(want, heightMeasureSpec))
     }
     /** Screen x of the original page's left edge. */
     private fun pageX(s: Float) = width / 2f - pageW * s / 2f

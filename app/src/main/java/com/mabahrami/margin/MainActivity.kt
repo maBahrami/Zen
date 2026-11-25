@@ -4711,7 +4711,7 @@ class MainActivity : ComponentActivity() {
         segment.addView(segOne, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         segment.addView(segAll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         box.addView(segment, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            bottomMargin = dp(6)
+            bottomMargin = dp(14)
         })
         preview.setMargins(
             if (thisPageOnly && page != null) d.leftOf(page) else d.marginL,
@@ -4722,10 +4722,12 @@ class MainActivity : ComponentActivity() {
             textSize = 12f
             setTextColor(TEXT_DIM)
             gravity = Gravity.CENTER
-            setPadding(0, dp(2), 0, 0)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(6)
         })
-        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(280)).apply {
-            bottomMargin = dp(8)
+        // as tall as the page needs (the preview sizes itself to its width)
+        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(14)
         })
         if (page != null && !page.isBlank) {
             lifecycleScope.launch {
@@ -4781,14 +4783,15 @@ class MainActivity : ComponentActivity() {
         segOne.setOnClickListener { switchScope(true) }
         styleSegment()
         box.addView(paperBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            bottomMargin = dp(8)
+            bottomMargin = dp(12)
         })
         box.addView(TextView(this).apply {
             text = "72 pt = 1 inch. The original page is never scaled."
             textSize = 12f
             setTextColor(TEXT_DIM)
+            gravity = Gravity.CENTER
             setPadding(0, 0, 0, dp(4))
-        })
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         ZenBuilder()
             .setTitle("Margins")
             .setView(box)
