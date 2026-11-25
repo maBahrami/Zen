@@ -4692,8 +4692,8 @@ class MainActivity : ComponentActivity() {
         val page = d.pages.getOrNull(pi)
         val preview = MarginPreview(this, (page?.w ?: 595).toFloat(), (page?.h ?: 842).toFloat())
 
-        // scope: all pages, or only the page on screen
-        var thisPageOnly = page != null && (page.mL != null || page.mR != null)
+        // scope: only the page on screen (the default) or all pages
+        var thisPageOnly = page != null
         val segment = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(3), dp(3), dp(3), dp(3))
@@ -4708,8 +4708,8 @@ class MainActivity : ComponentActivity() {
         }
         val segAll = segItem("All pages")
         val segOne = segItem("This page (${pi + 1})")
-        segment.addView(segAll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         segment.addView(segOne, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        segment.addView(segAll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         box.addView(segment, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             bottomMargin = dp(6)
         })
@@ -4717,15 +4717,15 @@ class MainActivity : ComponentActivity() {
             if (thisPageOnly && page != null) d.leftOf(page) else d.marginL,
             if (thisPageOnly && page != null) d.rightOf(page) else d.marginR,
         )
-        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(280)).apply {
-            bottomMargin = dp(4)
-        })
         box.addView(TextView(this).apply {
             text = "Drag the blue edges to set each margin."
             textSize = 12f
             setTextColor(TEXT_DIM)
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(8))
+            setPadding(0, dp(2), 0, 0)
+        })
+        box.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(280)).apply {
+            bottomMargin = dp(8)
         })
         if (page != null && !page.isBlank) {
             lifecycleScope.launch {
