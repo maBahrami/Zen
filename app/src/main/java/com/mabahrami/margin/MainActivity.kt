@@ -1378,6 +1378,11 @@ class MainActivity : ComponentActivity() {
             PenWheel.Item(PenWheel.ACTION, 0, icon(R.drawable.ic_undo), TEXT, false),
             PenWheel.Item(PenWheel.ACTION, 1, icon(R.drawable.ic_redo), TEXT, false),
             PenWheel.Item(PenWheel.ACTION, 2, icon(R.drawable.ic_camera), TEXT, false),
+            // line styles: shown beside the pen after a second tap on it
+            PenWheel.Item(PenWheel.STYLE, LINE_SOLID, icon(R.drawable.ic_line_solid), TEXT, pdfView.penStyle == LINE_SOLID),
+            PenWheel.Item(PenWheel.STYLE, LINE_WAVY, icon(R.drawable.ic_line_wavy), TEXT, pdfView.penStyle == LINE_WAVY),
+            PenWheel.Item(PenWheel.STYLE, LINE_DASHED, icon(R.drawable.ic_line_dashed), TEXT, pdfView.penStyle == LINE_DASHED),
+            PenWheel.Item(PenWheel.STYLE, LINE_DOTTED, icon(R.drawable.ic_line_dotted), TEXT, pdfView.penStyle == LINE_DOTTED),
         )
         // colours as the palette shows them (black shows white in dark view)
         val dark = active?.dark == true
@@ -1421,6 +1426,11 @@ class MainActivity : ComponentActivity() {
                     1 -> pdfView.redo()
                     2 -> active?.let { d -> pendingPlace = null; takePhoto(d) } // same as Insert > Take photo
                 }
+            } else if (item.kind == PenWheel.STYLE) {
+                pdfView.penStyle = item.value
+                prefs.edit().putInt("line_style", item.value).apply()
+                if (pdfView.eraserMode || pdfView.lassoMode || hlMode) setTool(false)
+                refreshTool()
             } else if (item.kind == PenWheel.TOOL) when (item.value) {
                 0 -> setTool(false)
                 1 -> setTool(true)

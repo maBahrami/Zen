@@ -44,6 +44,8 @@ class PenWheel(context: Context) : View(context) {
         const val COLOUR = 1
         /** Undo (value 0) on the left and redo (value 1) on the right (they keep the wheel open); camera (2) in the centre. */
         const val ACTION = 2
+        /** A line style (value: LINE_SOLID…), shown in an arc beside the pen after a second tap on it. */
+        const val STYLE = 3
         private const val ACCENT = 0xFF0A84FF.toInt()
         /** The size slider's arc over the top (degrees; 0 = right, clockwise on screen). */
         private const val ARC_START = -155.0
@@ -78,6 +80,11 @@ class PenWheel(context: Context) : View(context) {
     private val segPath = Path()
 
     private var tools: List<Item> = emptyList()
+    /** Line styles: an arc just outside the pen button, opened by tapping the pen when it's already the tool. */
+    private var styles: List<Item> = emptyList()
+    private var styleOpen = false
+    private var styleP = 0f
+    private var styleAnim: ValueAnimator? = null
     private var actions: List<Item> = emptyList()
     private var colours: List<Item> = emptyList()
     private var lineColour = Color.WHITE
@@ -117,8 +124,9 @@ class PenWheel(context: Context) : View(context) {
     ) {
         screenX = tipScreenX
         screenY = tipScreenY
-        this.tools = tools.filter { it.kind != ACTION }
+        this.tools = tools.filter { it.kind == TOOL }
         this.actions = tools.filter { it.kind == ACTION }
+        this.styles = tools.filter { it.kind == STYLE }
         this.colours = colours
         this.lineColour = lineColour
         this.steps = max(2, steps)
@@ -132,7 +140,8 @@ class PenWheel(context: Context) : View(context) {
         val loc = IntArray(2)
         getLocationOnScreen(loc)
         // centred on the tip; moved in only as much as needed to stay on screen
-        val m = arcOut + dp(26f)
+        // room for everything, the line styles beside the pen included
+        val m = max(arcOut + dp(26f), toolR + dp(44f) + toolSize + dp(4f))
         cx = (screenX - loc[0]).coerceIn(min(m, width / 2f), max(width - m, width / 2f))
         cy = (screenY - loc[1]).coerceIn(min(m, height / 2f), max(height - m, height / 2f))
     }
@@ -180,6 +189,29 @@ class PenWheel(context: Context) : View(context) {
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
         out[1] = cy + rr * sin(a)
+    }
+
+    /** Centre of line style [k] of [n]: an arc just outside the pen button (the first tool), [p] of the way out. */
+    private fun stylePos(k: Int, n: Int, p: Float, out: FloatArray) {
+        toolPos(0, tools.size, 1f, out)
+        val base = Math.atan2((out[1] - cy).toDouble(), (out[0] - cx).toDouble())
+        val step = Math.toRadians(19.0)
+        val a = base + (k - (n - 1) / 2.0) * step
+        val rr = toolR + (dp(44f) * p)
+        out[0] = cx + rr * cos(a).toFloat()
+        out[1] = cy + rr * sin(a).toFloat()
+    }
+
+    private fun setStyleOpen(open: Boolean) {
+        styleOpen = open
+        styleAnim?.cancel()
+        styleAnim = ValueAnimator.ofFloat(styleP, if (open) 1f else 0f).apply {
+            duration = 200
+            interpolator = if (open) OvershootInterpolator(1.2f) else DecelerateInterpolator()
+            addUpdateListener { styleP = it.animatedValue as Float; invalidate() }
+            start()
+        }
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
 
     /** Undo on the left side of the circle, redo on the right. */
@@ -305,6 +337,36 @@ class PenWheel(context: Context) : View(context) {
             ic.draw(canvas)
         }
 
+        // line styles beside the pen (after a second tap on the pen)
+        if (styleP > 0.01f) {
+            val sp = min(1f, styleP)
+            for ((k, it) in styles.withIndex()) {
+                stylePos(k, styles.size, styleP, tmp)
+                val r = toolSize * 0.9f * sp * (if (it === pressed) 0.88f else 1f)
+                fill.shader = null
+                fill.color = 0xFF1C1C1E.toInt()
+                fill.alpha = (alpha * 0.94f * sp).toInt()
+                fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a * sp).toInt() shl 24))
+                canvas.drawCircle(tmp[0], tmp[1], r, fill)
+                fill.clearShadowLayer()
+                if (it.selected) {
+                    fill.color = ACCENT
+                    fill.alpha = (alpha * 0.25f * sp).toInt()
+                    canvas.drawCircle(tmp[0], tmp[1], r, fill)
+                    ring.color = ACCENT
+                    ring.alpha = (alpha * sp).toInt()
+                    ring.strokeWidth = dp(1.6f)
+                    canvas.drawCircle(tmp[0], tmp[1], r, ring)
+                }
+                val ic = it.icon ?: continue
+                val h = (r * 0.7f).toInt()
+                ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
+                ic.setTint(it.tint)
+                ic.alpha = (alpha * sp).toInt()
+                ic.draw(canvas)
+            }
+        }
+
         // undo / redo on the sides (dimmed when there's nothing to undo / redo)
         for (it in actions) {
             actionPos(it, tp, tmp)
@@ -425,6 +487,10 @@ class PenWheel(context: Context) : View(context) {
 
     private fun hit(x: Float, y: Float): Item? {
         if (progress < 0.5f) return null
+        if (styleOpen) for ((k, it) in styles.withIndex()) {
+            stylePos(k, styles.size, 1f, tmp)
+            if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(3f)) return it
+        }
         for ((i, it) in tools.withIndex()) {
             toolPos(i, tools.size, 1f, tmp)
             if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
@@ -509,6 +575,11 @@ class PenWheel(context: Context) : View(context) {
                 }
                 val h = hit(e.x, e.y)
                 pressed = null
+                if (h != null && h.kind == TOOL && h.value == 0 && h.selected && styles.isNotEmpty()) {
+                    // the pen again: its line styles open (or close) beside it; the wheel stays open
+                    setStyleOpen(!styleOpen)
+                    return true
+                }
                 if (h != null && h.kind == ACTION && h.value != 2) {
                     // undo / redo: done, and the wheel stays open for more
                     if (canDo(h.value)) onPick?.invoke(h)
