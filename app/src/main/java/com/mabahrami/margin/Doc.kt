@@ -396,7 +396,7 @@ class Doc(
 
     /** Where "Save" writes (a content Uri string), or null if never saved. */
     var saveUri: String? = null
-    /** The file this tab was opened from (for "Save in place"), if known. */
+    /** The file this tab was opened from (for "Save in-place"), if known. */
     var originUri: String? = null
     /**
      * Size and last change ("size;time") of [originUri] when Zen last read or wrote it, to notice when the file

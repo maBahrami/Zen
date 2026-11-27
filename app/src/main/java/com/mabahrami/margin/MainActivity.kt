@@ -4585,7 +4585,7 @@ class MainActivity : ComponentActivity() {
             d.unsaved = false
             d.scale = 0f // fit to screen on first view
             d.dark = true // documents open in dark view (a tap on the dark/light button switches)
-            // remember where the file came from, so "Save in place" can write back to it
+            // remember where the file came from, so "Save in-place" can write back to it
             if (fromPicker) keepWriteAccess(uri)
             d.originUri = uri.toString()
             d.originStamp = openStamp
@@ -4941,7 +4941,7 @@ class MainActivity : ComponentActivity() {
         val inPlaceTarget = d.saveUri ?: d.originUri
         box.addView(TextView(this).apply {
             text = if (inPlaceTarget != null)
-                "Save in place overwrites the file you opened (renaming it if you changed the name). " +
+                "Save in-place overwrites the file you opened (renaming it if you changed the name). " +
                     "The untouched original stays inside it, so nothing is lost and Margin can still edit everything."
             else "This tab has no file to save back to, so choose a location."
             textSize = 12f
@@ -4954,7 +4954,7 @@ class MainActivity : ComponentActivity() {
             return if (n.isEmpty()) current else n
         }
         if (inPlaceTarget != null) {
-            b.setPositiveButton("Save in place") { _, _ ->
+            b.setPositiveButton("Save in-place") { _, _ ->
                 val n = chosenName()
                 writeDoc(d, Uri.parse(inPlaceTarget), isSave = true, fromPicker = false,
                     renameTo = if (n != current) "$n.pdf" else null)
