@@ -334,16 +334,18 @@ class PenWheel(context: Context) : View(context) {
         path.close()
     }
 
-    /** A dim round button on the band: a faint light disc with a hairline edge; brighter while pressed. */
+    /** A dim circle drawn round an icon on the band (just a thin line); a light fill while pressed. */
     private fun dimButton(canvas: Canvas, x: Float, y: Float, r: Float, alpha: Int, pressed: Boolean) {
-        fill.shader = null
-        fill.color = Color.WHITE
-        fill.alpha = (alpha * (if (pressed) 0.22f else 0.09f)).toInt()
-        canvas.drawCircle(x, y, r, fill)
+        if (pressed) {
+            fill.shader = null
+            fill.color = Color.WHITE
+            fill.alpha = (alpha * 0.14f).toInt()
+            canvas.drawCircle(x, y, r, fill)
+        }
         ring.color = Color.WHITE
-        ring.alpha = (alpha * 0.14f).toInt()
-        ring.strokeWidth = dp(0.8f)
-        canvas.drawCircle(x, y, r - dp(0.4f), ring)
+        ring.alpha = (alpha * 0.22f).toInt()
+        ring.strokeWidth = dp(1f)
+        canvas.drawCircle(x, y, r - dp(0.5f), ring)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -383,7 +385,7 @@ class PenWheel(context: Context) : View(context) {
                 canvas.restore()
             }
             fill.color = 0xFF1C1C1E.toInt()
-            fill.alpha = (alpha * (if (bd != null) 0.38f else 0.95f)).toInt()
+            fill.alpha = (alpha * (if (bd != null) 0.62f else 0.95f)).toInt()
             canvas.drawPath(bandPath, fill)
             ring.color = Color.WHITE
             ring.alpha = (alpha * 0.12f).toInt()
