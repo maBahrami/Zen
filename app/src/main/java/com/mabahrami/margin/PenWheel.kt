@@ -46,6 +46,8 @@ class PenWheel(context: Context) : View(context) {
         const val ACTION = 2
         /** A line style (value: LINE_SOLID…), shown in an arc beside the pen after a second tap on it. */
         const val STYLE = 3
+        /** A highlighter mode (value 0 = freehand, 1 = straight), shown beside the highlighter after a second tap. */
+        const val HL_STYLE = 4
         private const val ACCENT = 0xFF0A84FF.toInt()
         /** The size slider's arc over the top (degrees; 0 = right, clockwise on screen). */
         private const val ARC_START = -155.0
@@ -82,7 +84,11 @@ class PenWheel(context: Context) : View(context) {
     private var tools: List<Item> = emptyList()
     /** Line styles: an arc just outside the pen button, opened by tapping the pen when it's already the tool. */
     private var styles: List<Item> = emptyList()
+    private var hlStyles: List<Item> = emptyList()
     private var styleOpen = false
+    /** Which tool's options are out: 0 = the pen's line styles, 1 = the highlighter's modes. */
+    private var styleTool = 0
+    private val shownStyles: List<Item> get() = if (styleTool == 1) hlStyles else styles
     private var styleP = 0f
     private var styleAnim: ValueAnimator? = null
     private var actions: List<Item> = emptyList()
@@ -127,6 +133,7 @@ class PenWheel(context: Context) : View(context) {
         this.tools = tools.filter { it.kind == TOOL }
         this.actions = tools.filter { it.kind == ACTION }
         this.styles = tools.filter { it.kind == STYLE }
+        this.hlStyles = tools.filter { it.kind == HL_STYLE }
         this.colours = colours
         this.lineColour = lineColour
         this.steps = max(2, steps)
@@ -193,7 +200,7 @@ class PenWheel(context: Context) : View(context) {
 
     /** Centre of line style [k] of [n]: an arc just outside the pen button (the first tool), [p] of the way out. */
     private fun stylePos(k: Int, n: Int, p: Float, out: FloatArray) {
-        toolPos(0, tools.size, 1f, out)
+        toolPos(styleTool, tools.size, 1f, out)
         val base = Math.atan2((out[1] - cy).toDouble(), (out[0] - cx).toDouble())
         val step = Math.toRadians(19.0)
         // the first style (solid) highest on screen, the rest going down
@@ -338,11 +345,12 @@ class PenWheel(context: Context) : View(context) {
             ic.draw(canvas)
         }
 
-        // line styles beside the pen (after a second tap on the pen)
+        // line styles beside the pen, or the highlighter's modes beside it (after a second tap on that tool)
         if (styleP > 0.01f) {
             val sp = min(1f, styleP)
-            for ((k, it) in styles.withIndex()) {
-                stylePos(k, styles.size, styleP, tmp)
+            val list = shownStyles
+            for ((k, it) in list.withIndex()) {
+                stylePos(k, list.size, styleP, tmp)
                 val r = toolSize * 0.9f * sp * (if (it === pressed) 0.88f else 1f)
                 fill.shader = null
                 fill.color = 0xFF1C1C1E.toInt()
@@ -488,8 +496,8 @@ class PenWheel(context: Context) : View(context) {
 
     private fun hit(x: Float, y: Float): Item? {
         if (progress < 0.5f) return null
-        if (styleOpen) for ((k, it) in styles.withIndex()) {
-            stylePos(k, styles.size, 1f, tmp)
+        if (styleOpen) for ((k, it) in shownStyles.withIndex()) {
+            stylePos(k, shownStyles.size, 1f, tmp)
             if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(3f)) return it
         }
         for ((i, it) in tools.withIndex()) {
@@ -576,9 +584,15 @@ class PenWheel(context: Context) : View(context) {
                 }
                 val h = hit(e.x, e.y)
                 pressed = null
-                if (h != null && h.kind == TOOL && h.value == 0 && h.selected && styles.isNotEmpty()) {
-                    // the pen again: its line styles open (or close) beside it; the wheel stays open
-                    setStyleOpen(!styleOpen)
+                if (h != null && h.kind == TOOL && h.selected && (h.value == 0 && styles.isNotEmpty() || h.value == 1 && hlStyles.isNotEmpty())) {
+                    // the pen (or highlighter) again: its options open (or close) beside it; the wheel stays open
+                    val t = h.value
+                    if (styleOpen && styleTool == t) setStyleOpen(false)
+                    else {
+                        styleTool = t
+                        styleP = 0f // grows out of this tool
+                        setStyleOpen(true)
+                    }
                     return true
                 }
                 if (h != null && h.kind == ACTION && h.value != 2) {

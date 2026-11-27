@@ -1383,6 +1383,9 @@ class MainActivity : ComponentActivity() {
             PenWheel.Item(PenWheel.STYLE, LINE_WAVY, icon(R.drawable.ic_line_wavy), TEXT, pdfView.penStyle == LINE_WAVY),
             PenWheel.Item(PenWheel.STYLE, LINE_DASHED, icon(R.drawable.ic_line_dashed), TEXT, pdfView.penStyle == LINE_DASHED),
             PenWheel.Item(PenWheel.STYLE, LINE_DOTTED, icon(R.drawable.ic_line_dotted), TEXT, pdfView.penStyle == LINE_DOTTED),
+            // highlighter: freehand (on top) or straight, beside it after a second tap
+            PenWheel.Item(PenWheel.HL_STYLE, 0, icon(R.drawable.ic_line_curve), TEXT, !pdfView.hlStraight),
+            PenWheel.Item(PenWheel.HL_STYLE, 1, icon(R.drawable.ic_line_solid), TEXT, pdfView.hlStraight),
         )
         // colours as the palette shows them (black shows white in dark view)
         val dark = active?.dark == true
@@ -1426,6 +1429,11 @@ class MainActivity : ComponentActivity() {
                     1 -> pdfView.redo()
                     2 -> active?.let { d -> pendingPlace = null; takePhoto(d) } // same as Insert > Take photo
                 }
+            } else if (item.kind == PenWheel.HL_STYLE) {
+                pdfView.hlStraight = item.value == 1
+                prefs.edit().putBoolean("hl_straight", pdfView.hlStraight).apply()
+                if (!hlMode || pdfView.eraserMode || pdfView.lassoMode) setTool(true)
+                refreshTool()
             } else if (item.kind == PenWheel.STYLE) {
                 pdfView.penStyle = item.value
                 prefs.edit().putInt("line_style", item.value).apply()
