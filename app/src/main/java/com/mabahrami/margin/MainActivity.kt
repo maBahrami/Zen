@@ -4573,6 +4573,7 @@ class MainActivity : ComponentActivity() {
             if (k >= 30 || total > 1024L * 1024 * 1024) {
                 f.delete()
                 File(f.parentFile, f.name.removeSuffix(".pdf") + ".meta").delete()
+                File(f.parentFile, f.name.removeSuffix(".pdf") + ".foreign").delete()
             }
         }
     }
@@ -4602,8 +4603,14 @@ class MainActivity : ComponentActivity() {
                 val key = if (remote) remoteKey(uri) else null
                 val cached = key?.let { File(remoteCacheDir(), "$it.pdf") }
                 val meta = key?.let { File(remoteCacheDir(), "$it.meta") }
-                if (stamp != null && cached != null && meta != null && cached.exists() && meta.exists() &&
-                    !stampChanged(meta.readText(), stamp)) {
+                // Zen read or wrote this file before, and it changed since: someone else changed it
+                val metaText = if (meta != null && meta.exists()) try { meta.readText() } catch (e: Exception) { null } else null
+                val seenChanged = stamp != null && metaText != null && stampChanged(metaText, stamp)
+                // found changed elsewhere on an earlier open, and not changed since: still open it as it is
+                val foreign = key?.let { File(remoteCacheDir(), "$it.foreign") }
+                val wasForeign = stamp != null && foreign != null && foreign.exists() &&
+                    !stampChanged(try { foreign.readText() } catch (e: Exception) { null } ?: "", stamp)
+                if (stamp != null && cached != null && cached.exists() && metaText != null && !seenChanged) {
                     cached.setLastModified(System.currentTimeMillis())
                     cached.copyTo(tmp, overwrite = true)
                 } else {
@@ -4651,7 +4658,17 @@ class MainActivity : ComponentActivity() {
                 val src = File(dir, "source.pdf")
                 if (!tmp.renameTo(src)) throw IOException("can't store the file")
                 // A file saved by Margin carries the original + editable strokes inside it.
-                val un = Exporter.unpack(src, dir)
+                val un = Exporter.unpack(src, dir, seenChanged || wasForeign)
+                try {
+                    if (un == Exporter.Unpacked.CHANGED && stamp != null && foreign != null) {
+                        remoteCacheDir().mkdirs()
+                        foreign.writeText(stamp)
+                    } else if (un == Exporter.Unpacked.EDITABLE) {
+                        foreign?.delete()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "foreign mark", e)
+                }
                 changedOutside = un == Exporter.Unpacked.CHANGED
                 un == Exporter.Unpacked.EDITABLE
             }

@@ -215,7 +215,11 @@ object Exporter {
      * If [file] (dir/source.pdf) was saved by Margin, replaces the working folder's contents with
      * the embedded original, inserted PDFs, images and state. Returns true when editable data was found.
      */
-    fun unpack(file: File, dir: File): Unpacked {
+    /**
+     * [changedOutside]: Zen knows the file changed somewhere else since it last read or wrote it. For a file
+     * without a fingerprint (saved by an older Zen) that is the only clue, so it then opens as it is.
+     */
+    fun unpack(file: File, dir: File, changedOutside: Boolean = false): Unpacked {
         val tmpDir = File(dir, "unpack.tmp")
         tmpDir.deleteRecursively()
         tmpDir.mkdirs()
@@ -227,14 +231,16 @@ object Exporter {
                 val st = map[EMBED_STATE]?.embeddedFile ?: return cleanup(tmpDir)
                 // Another app (like the Drive app) may have drawn on the pages after Zen saved them. Its changes are
                 // only on the visible pages, not in the embedded original, so restoring that would lose them.
-                // Files saved before this check have no fingerprint and are restored as before.
-                map[EMBED_SIG]?.embeddedFile?.let { sf ->
+                // Files saved before the fingerprint existed rely on [changedOutside].
+                val sf = map[EMBED_SIG]?.embeddedFile
+                val changed = if (sf != null) {
                     val saved = sf.createInputStream().use { it.readBytes().toString(Charsets.UTF_8) }.trim()
                     val now = try { pageSig(doc) } catch (e: Exception) { null }
-                    if (now != saved) {
-                        tmpDir.deleteRecursively()
-                        return Unpacked.CHANGED
-                    }
+                    now != saved
+                } else changedOutside
+                if (changed) {
+                    tmpDir.deleteRecursively()
+                    return Unpacked.CHANGED
                 }
                 for ((key, spec) in map) {
                     val rel = when {
