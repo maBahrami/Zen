@@ -74,7 +74,7 @@ class PenWheel(context: Context) : View(context) {
     // geometry
     // an outer band round the colour ring holds everything else: the tools along its lower half,
     // the size slider along its upper half
-    private val bandIn = dp(64f)       // right against the colour ring
+    private val bandIn = dp(68f)       // a small gap outside the colour ring
     private val bandOut = dp(106f)
     private val toolR = dp(88f)        // the middle of the band
     private val toolSize = dp(16f)     // touch size of a tool (its icon is drawn smaller)
