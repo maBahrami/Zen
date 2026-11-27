@@ -65,7 +65,7 @@ class PdfView(context: Context, private val renderExec: ExecutorService) : View(
         const val FAST_BOTH = 2
         /** Straight highlighter snaps to horizontal/vertical within this many degrees. */
         /** Straightened lines within this many degrees of level (0°) or upright (90°) snap to it exactly. */
-        private const val MAGNET_DEG = 1.0
+        private const val MAGNET_DEG = 2.0
         /** Once levelled, a line stays levelled until it leans this far away. */
         private const val MAGNET_RELEASE_DEG = 3.0
     }
