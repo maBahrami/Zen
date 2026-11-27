@@ -74,19 +74,19 @@ class PenWheel(context: Context) : View(context) {
     // geometry
     // an outer band round the colour ring holds everything else: the tools along its lower half,
     // the size slider along its upper half
-    private val bandIn = dp(88f)
-    private val bandOut = dp(142f)
-    private val toolR = dp(115f)       // the middle of the band
-    private val toolSize = dp(19f)     // touch size of a tool (its icon is drawn smaller)
-    private val stepSize = dp(17f)     // the − / + at the ends of the size slider
-    private val stepR = dp(115f)
+    private val bandIn = dp(70f)
+    private val bandOut = dp(106f)
+    private val toolR = dp(88f)        // the middle of the band
+    private val toolSize = dp(16f)     // touch size of a tool (its icon is drawn smaller)
+    private val stepSize = dp(14f)     // the − / + at the ends of the size slider
+    private val stepR = dp(88f)
     private val bandPath = Path()
-    private val segIn = dp(38f)        // the colour ring, empty in the middle: segments from here...
-    private val segOut = dp(80f)       // ...out to here
+    private val segIn = dp(30f)        // the colour ring, empty in the middle: segments from here...
+    private val segOut = dp(64f)       // ...out to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
-    private val arcR = dp(115f)
-    private val ringOut = dp(86f)
-    private val arcOut = dp(142f)
+    private val arcR = dp(88f)
+    private val ringOut = dp(68f)
+    private val arcOut = dp(106f)
     private val segPath = Path()
 
     private var tools: List<Item> = emptyList()
@@ -156,7 +156,7 @@ class PenWheel(context: Context) : View(context) {
         getLocationOnScreen(loc)
         // centred on the tip; moved in only as much as needed to stay on screen
         // room for everything, the line styles beside the pen included
-        val m = max(arcOut + dp(26f), toolR + dp(44f) + toolSize + dp(4f))
+        val m = max(arcOut + dp(26f), toolR + dp(36f) + toolSize + dp(4f))
         cx = (screenX - loc[0]).coerceIn(min(m, width / 2f), max(width - m, width / 2f))
         cy = (screenY - loc[1]).coerceIn(min(m, height / 2f), max(height - m, height / 2f))
     }
@@ -214,7 +214,7 @@ class PenWheel(context: Context) : View(context) {
         val step = Math.toRadians(19.0)
         // the first style (solid) highest on screen, the rest going down
         val a = base + ((n - 1 - k) - (n - 1) / 2.0) * step
-        val rr = toolR + (dp(44f) * p)
+        val rr = toolR + (dp(36f) * p)
         out[0] = cx + rr * cos(a).toFloat()
         out[1] = cy + rr * sin(a).toFloat()
     }
@@ -501,7 +501,7 @@ class PenWheel(context: Context) : View(context) {
             if (dragging || showLabel) {
                 text.textSize = dp(11f)
                 text.alpha = alpha
-                val lr = arcR + dp(23f)
+                val lr = bandOut + dp(12f) // just outside the band
                 canvas.drawText(label(stop), cx + lr * cos(ang).toFloat(), cy + lr * sin(ang).toFloat() + dp(4f), text)
             }
         }
