@@ -53,7 +53,7 @@ class PenWheel(context: Context) : View(context) {
         private const val ARC_START = -155.0
         private const val ARC_SPAN = 130.0
         /** Size steps (− and +) just past each end of the slider (degrees). */
-        private const val STEP_GAP = 18.0
+        private const val STEP_GAP = 15.0
         /** The lower arc of buttons: the pen at the left end (degrees, clockwise on screen), 6 places to the right end. */
         private const val RING_LEFT = 164.0
         private const val RING_STEP = (164.0 - 16.0) / 5
@@ -81,6 +81,8 @@ class PenWheel(context: Context) : View(context) {
     private val stepSize = dp(14f)     // the − / + at the ends of the size slider
     private val stepR = dp(88f)
     private val bandPath = Path()
+    /** The camera button in the middle (larger than the icons on the band). */
+    private val camR = dp(22f)
 
     /** A blurred picture of the screen behind (small), drawn through the band so it looks like frosted glass. */
     private var backdrop: android.graphics.Bitmap? = null
@@ -444,17 +446,33 @@ class PenWheel(context: Context) : View(context) {
             val on = canDo(it.value)
             fill.shader = null
             if (it.value == 2) {
-                // the camera in the middle keeps its own small button (it's not on the band)
+                // the camera in the middle: a larger disc of the same frosted glass as the band, with the same
+                // very subtle lighter disc as the other icons
+                val cr = camR * min(1f, tp)
+                bandPath.rewind()
+                bandPath.addCircle(tmp[0], tmp[1], cr, Path.Direction.CW)
                 fill.color = 0xFF1C1C1E.toInt()
-                fill.alpha = (alpha * 0.94f).toInt()
-                fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
-                canvas.drawCircle(tmp[0], tmp[1], r * (if (it === pressed) 0.88f else 1f), fill)
+                fill.alpha = alpha
+                fill.setShadowLayer(dp(8f), 0f, dp(2f), ((0x55 * a).toInt() shl 24))
+                canvas.drawPath(bandPath, fill)
                 fill.clearShadowLayer()
+                val bd = backdrop
+                if (bd != null && !bd.isRecycled) {
+                    canvas.save()
+                    canvas.clipPath(bandPath)
+                    backdropPaint.alpha = alpha
+                    canvas.drawBitmap(bd, null, backdropDst, backdropPaint)
+                    canvas.restore()
+                    fill.color = 0xFF1C1C1E.toInt()
+                    fill.alpha = (alpha * 0.62f).toInt()
+                    canvas.drawPath(bandPath, fill)
+                }
+                dimButton(canvas, tmp[0], tmp[1], cr, alpha, it === pressed)
             } else {
                 dimButton(canvas, tmp[0], tmp[1], r * 0.95f, alpha, it === pressed && on)
             }
             val ic = it.icon ?: continue
-            val h = (r * (if (it.value == 2) 0.7f else 0.62f)).toInt()
+            val h = (if (it.value == 2) camR * min(1f, tp) * 0.5f else r * 0.62f).toInt()
             ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
             ic.setTint(it.tint)
             ic.alpha = if (on) alpha else alpha / 3
@@ -568,7 +586,8 @@ class PenWheel(context: Context) : View(context) {
         }
         for (it in actions) {
             actionPos(it, 1f, tmp)
-            if (hypot(x - tmp[0], y - tmp[1]) <= toolSize + dp(5f)) return it
+            val reach = if (it.value == 2) camR + dp(3f) else toolSize + dp(5f)
+            if (hypot(x - tmp[0], y - tmp[1]) <= reach) return it
         }
         // colour segments: by distance and angle
         val d = hypot(x - cx, y - cy)
