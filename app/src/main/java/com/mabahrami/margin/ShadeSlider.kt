@@ -66,7 +66,10 @@ class ShadeSlider(
     private var shaderFor = -1
 
     /** Room at the ends: the whole thumb (its ring and shadow included) stays inside the slider. */
-    private val pad get() = width * 0.42f + 3f * density
+    private val pad get() = knobH / 2f + 3f * density
+    /** The knob: a small rounded bar across the slider. */
+    private val knobH get() = 9f * density
+    private val knob = RectF()
 
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
@@ -81,13 +84,17 @@ class ShadeSlider(
         canvas.drawRoundRect(r, w * 0.3f, w * 0.3f, bar)
         // the thumb: a ring in the chosen shade
         val y = pad + (h - 2 * pad) * value
-        val tr = w * 0.42f
+        // the knob: a small rounded bar in the chosen shade, a little wider than the slider, with a white edge
+        val kw = w * 0.86f
+        val kh = knobH
+        knob.set((w - kw) / 2f, y - kh / 2f, (w + kw) / 2f, y + kh / 2f)
+        val kr = 3f * density
         thumbFill.color = shown(colorAt(value))
-        canvas.drawCircle(w / 2f, y, tr, thumbFill)
-        thumbShadow.strokeWidth = 3.5f * density
-        canvas.drawCircle(w / 2f, y, tr, thumbShadow)
-        thumb.strokeWidth = 2f * density
-        canvas.drawCircle(w / 2f, y, tr, thumb)
+        canvas.drawRoundRect(knob, kr, kr, thumbFill)
+        thumbShadow.strokeWidth = 3f * density
+        canvas.drawRoundRect(knob, kr, kr, thumbShadow)
+        thumb.strokeWidth = 1.5f * density
+        canvas.drawRoundRect(knob, kr, kr, thumb)
     }
 
     @SuppressLint("ClickableViewAccessibility")
