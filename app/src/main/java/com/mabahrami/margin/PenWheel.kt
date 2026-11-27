@@ -196,7 +196,8 @@ class PenWheel(context: Context) : View(context) {
         toolPos(0, tools.size, 1f, out)
         val base = Math.atan2((out[1] - cy).toDouble(), (out[0] - cx).toDouble())
         val step = Math.toRadians(19.0)
-        val a = base + (k - (n - 1) / 2.0) * step
+        // the first style (solid) highest on screen, the rest going down
+        val a = base + ((n - 1 - k) - (n - 1) / 2.0) * step
         val rr = toolR + (dp(44f) * p)
         out[0] = cx + rr * cos(a).toFloat()
         out[1] = cy + rr * sin(a).toFloat()
