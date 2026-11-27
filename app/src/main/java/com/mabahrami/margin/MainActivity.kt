@@ -1360,6 +1360,41 @@ class MainActivity : ComponentActivity() {
     private var wheel: PenWheel? = null
 
     /** S Pen button clicked while hovering: the round pen menu, centred on the pen tip. Again: closes it. */
+    /** A quick blur (three box-blur passes each way) of a small bitmap, in place. [radius] in its pixels. */
+    private fun blurInPlace(bmp: android.graphics.Bitmap, radius: Int) {
+        val w = bmp.width
+        val h = bmp.height
+        val r = radius.coerceIn(1, 40)
+        val src = IntArray(w * h)
+        bmp.getPixels(src, 0, w, 0, 0, w, h)
+        val tmp = IntArray(w * h)
+        fun pass(a: IntArray, b: IntArray, len: Int, lines: Int, step: Int, lineStep: Int) {
+            val div = 2 * r + 1
+            for (l in 0 until lines) {
+                var sa = 0; var sr = 0; var sg = 0; var sb = 0
+                val base = l * lineStep
+                for (k in -r..r) {
+                    val p = a[base + k.coerceIn(0, len - 1) * step]
+                    sa += p ushr 24; sr += (p shr 16) and 255; sg += (p shr 8) and 255; sb += p and 255
+                }
+                for (i in 0 until len) {
+                    b[base + i * step] = ((sa / div) shl 24) or ((sr / div) shl 16) or ((sg / div) shl 8) or (sb / div)
+                    val out = a[base + (i - r).coerceIn(0, len - 1) * step]
+                    val inn = a[base + (i + r + 1).coerceIn(0, len - 1) * step]
+                    sa += (inn ushr 24) - (out ushr 24)
+                    sr += ((inn shr 16) and 255) - ((out shr 16) and 255)
+                    sg += ((inn shr 8) and 255) - ((out shr 8) and 255)
+                    sb += (inn and 255) - (out and 255)
+                }
+            }
+        }
+        repeat(3) {
+            pass(src, tmp, w, h, 1, w)   // across
+            pass(tmp, src, h, w, w, 1)   // down
+        }
+        bmp.setPixels(src, 0, w, 0, 0, w, h)
+    }
+
     private fun showPenWheel(v: PdfView, x: Float, y: Float) {
         wheel?.let { it.close(); return }
         if (active == null) return
@@ -1459,6 +1494,25 @@ class MainActivity : ComponentActivity() {
         }
         w.onClosed = { try { pop.dismiss() } catch (e: Exception) {} }
         wheel = w
+        // frosted glass: a small, blurred picture of the screen behind the wheel
+        try {
+            val root = window.decorView
+            val scale = 0.25f
+            val bw = (root.width * scale).toInt()
+            val bh = (root.height * scale).toInt()
+            if (bw > 0 && bh > 0) {
+                val bmp = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
+                val c = android.graphics.Canvas(bmp)
+                c.scale(scale, scale)
+                root.draw(c)
+                blurInPlace(bmp, dp(6))
+                val rl = IntArray(2)
+                root.getLocationOnScreen(rl)
+                w.setBackdrop(bmp, rl[0].toFloat(), rl[1].toFloat(), scale)
+            }
+        } catch (t: Throwable) {
+            // no glass then: the band is simply dark
+        }
         wheelPop = pop
         try {
             pop.showAtLocation(window.decorView, Gravity.NO_GRAVITY, 0, 0)

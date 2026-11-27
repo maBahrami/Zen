@@ -74,13 +74,30 @@ class PenWheel(context: Context) : View(context) {
     // geometry
     // an outer band round the colour ring holds everything else: the tools along its lower half,
     // the size slider along its upper half
-    private val bandIn = dp(70f)
+    private val bandIn = dp(64f)       // right against the colour ring
     private val bandOut = dp(106f)
     private val toolR = dp(88f)        // the middle of the band
     private val toolSize = dp(16f)     // touch size of a tool (its icon is drawn smaller)
     private val stepSize = dp(14f)     // the − / + at the ends of the size slider
     private val stepR = dp(88f)
     private val bandPath = Path()
+
+    /** A blurred picture of the screen behind (small), drawn through the band so it looks like frosted glass. */
+    private var backdrop: android.graphics.Bitmap? = null
+    private val backdropDst = android.graphics.RectF()
+    private val backdropPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private var backdropScreenL = 0f
+    private var backdropScreenT = 0f
+    private var backdropScale = 1f
+
+    /** [bmp]: the screen behind, already blurred, at [scale] of the real size, its top-left at screen ([l], [t]). */
+    fun setBackdrop(bmp: android.graphics.Bitmap?, l: Float, t: Float, scale: Float) {
+        backdrop = bmp
+        backdropScreenL = l
+        backdropScreenT = t
+        backdropScale = scale
+        invalidate()
+    }
     private val segIn = dp(30f)        // the colour ring, empty in the middle: segments from here...
     private val segOut = dp(64f)       // ...out to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
@@ -333,12 +350,29 @@ class PenWheel(context: Context) : View(context) {
             bandPath.fillType = Path.FillType.EVEN_ODD
             bandPath.addCircle(cx, cy, bandOut * bp, Path.Direction.CW)
             bandPath.addCircle(cx, cy, bandIn * bp, Path.Direction.CW)
+            // the band with a soft shadow under it (the blurred picture then covers it)
             fill.shader = null
             fill.color = 0xFF1C1C1E.toInt()
-            fill.alpha = (alpha * 0.95f).toInt()
+            fill.alpha = alpha
             fill.setShadowLayer(dp(10f), 0f, dp(3f), ((0x66 * a).toInt() shl 24))
             canvas.drawPath(bandPath, fill)
             fill.clearShadowLayer()
+            // frosted glass: the blurred screen behind, seen through the band, under a dark tint
+            val bd = backdrop
+            if (bd != null && !bd.isRecycled) {
+                val loc = IntArray(2)
+                getLocationOnScreen(loc)
+                backdropDst.set(backdropScreenL - loc[0], backdropScreenT - loc[1],
+                    backdropScreenL - loc[0] + bd.width / backdropScale, backdropScreenT - loc[1] + bd.height / backdropScale)
+                canvas.save()
+                canvas.clipPath(bandPath)
+                backdropPaint.alpha = alpha
+                canvas.drawBitmap(bd, null, backdropDst, backdropPaint)
+                canvas.restore()
+            }
+            fill.color = 0xFF1C1C1E.toInt()
+            fill.alpha = (alpha * (if (bd != null) 0.62f else 0.95f)).toInt()
+            canvas.drawPath(bandPath, fill)
             ring.color = Color.WHITE
             ring.alpha = (alpha * 0.12f).toInt()
             ring.strokeWidth = dp(1f)
