@@ -72,16 +72,21 @@ class PenWheel(context: Context) : View(context) {
     private fun dp(v: Float) = v * density
 
     // geometry
-    private val toolR = dp(110f)       // the tools sit around the colour disc, under the slider
-    private val toolSize = dp(19f)     // larger buttons: easier to tap
-    private val stepSize = dp(19f)     // the − / + buttons at the ends of the size slider (as big as the tools)
-    private val stepR = dp(102f)       // a little outside the slider, clear of the colour ring
+    // an outer band round the colour ring holds everything else: the tools along its lower half,
+    // the size slider along its upper half
+    private val bandIn = dp(88f)
+    private val bandOut = dp(142f)
+    private val toolR = dp(115f)       // the middle of the band
+    private val toolSize = dp(19f)     // touch size of a tool (its icon is drawn smaller)
+    private val stepSize = dp(17f)     // the − / + at the ends of the size slider
+    private val stepR = dp(115f)
+    private val bandPath = Path()
     private val segIn = dp(38f)        // the colour ring, empty in the middle: segments from here...
     private val segOut = dp(80f)       // ...out to here
     private val segGap = -0.4f         // degrees between segments (a hair of overlap: no seams)
-    private val arcR = dp(97f)
+    private val arcR = dp(115f)
     private val ringOut = dp(86f)
-    private val arcOut = dp(110f)
+    private val arcOut = dp(142f)
     private val segPath = Path()
 
     private var tools: List<Item> = emptyList()
@@ -320,29 +325,38 @@ class PenWheel(context: Context) : View(context) {
         val s = min(1f, p)
         val sliderP = min(1f, part(0.2f))
 
-        // tools (inner ring)
+        // the outer band: one dark glass ring behind all the tools and the size slider
         val tp = part(0f)
-        for ((i, it) in tools.withIndex()) {
-            toolPos(i, tools.size, tp, tmp)
-            val r = toolSize * min(1f, tp) * (if (it === pressed) 0.88f else 1f)
-            // no disc behind the wheel: each tool has its own small dark button, so it reads on any page
+        run {
+            val bp = min(1f, tp)
+            bandPath.rewind()
+            bandPath.fillType = Path.FillType.EVEN_ODD
+            bandPath.addCircle(cx, cy, bandOut * bp, Path.Direction.CW)
+            bandPath.addCircle(cx, cy, bandIn * bp, Path.Direction.CW)
             fill.shader = null
             fill.color = 0xFF1C1C1E.toInt()
-            fill.alpha = (alpha * 0.94f).toInt()
-            fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
-            canvas.drawCircle(tmp[0], tmp[1], r, fill)
+            fill.alpha = (alpha * 0.95f).toInt()
+            fill.setShadowLayer(dp(10f), 0f, dp(3f), ((0x66 * a).toInt() shl 24))
+            canvas.drawPath(bandPath, fill)
             fill.clearShadowLayer()
-            if (it.selected) {
-                fill.color = ACCENT
-                fill.alpha = (alpha * 0.25f).toInt()
-                canvas.drawCircle(tmp[0], tmp[1], r, fill)
-                ring.color = ACCENT
-                ring.alpha = alpha
-                ring.strokeWidth = dp(1.6f)
-                canvas.drawCircle(tmp[0], tmp[1], r, ring)
+            ring.color = Color.WHITE
+            ring.alpha = (alpha * 0.12f).toInt()
+            ring.strokeWidth = dp(1f)
+            canvas.drawCircle(cx, cy, bandOut * bp - dp(0.5f), ring)
+            canvas.drawCircle(cx, cy, bandIn * bp + dp(0.5f), ring)
+        }
+        for ((i, it) in tools.withIndex()) {
+            toolPos(i, tools.size, tp, tmp)
+            val r = toolSize * min(1f, tp)
+            // on the band: just the icon; the tool in use sits in a soft blue circle, a pressed one in a light one
+            if (it.selected || it === pressed) {
+                fill.shader = null
+                fill.color = if (it.selected) ACCENT else Color.WHITE
+                fill.alpha = (alpha * (if (it.selected) 0.28f else 0.14f)).toInt()
+                canvas.drawCircle(tmp[0], tmp[1], r * 0.95f, fill)
             }
             val ic = it.icon ?: continue
-            val h = (r * 0.7f).toInt()
+            val h = (r * 0.62f).toInt()
             ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
             ic.setTint(it.tint)
             ic.alpha = alpha
@@ -383,16 +397,23 @@ class PenWheel(context: Context) : View(context) {
         // undo / redo on the sides (dimmed when there's nothing to undo / redo)
         for (it in actions) {
             actionPos(it, tp, tmp)
-            val r = toolSize * min(1f, tp) * (if (it === pressed) 0.88f else 1f)
+            val r = toolSize * min(1f, tp)
             val on = canDo(it.value)
             fill.shader = null
-            fill.color = 0xFF1C1C1E.toInt()
-            fill.alpha = (alpha * 0.94f).toInt()
-            fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
-            canvas.drawCircle(tmp[0], tmp[1], r, fill)
-            fill.clearShadowLayer()
+            if (it.value == 2) {
+                // the camera in the middle keeps its own small button (it's not on the band)
+                fill.color = 0xFF1C1C1E.toInt()
+                fill.alpha = (alpha * 0.94f).toInt()
+                fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
+                canvas.drawCircle(tmp[0], tmp[1], r * (if (it === pressed) 0.88f else 1f), fill)
+                fill.clearShadowLayer()
+            } else if (it === pressed && on) {
+                fill.color = Color.WHITE
+                fill.alpha = (alpha * 0.14f).toInt()
+                canvas.drawCircle(tmp[0], tmp[1], r * 0.95f, fill)
+            }
             val ic = it.icon ?: continue
-            val h = (r * 0.7f).toInt()
+            val h = (r * (if (it.value == 2) 0.7f else 0.62f)).toInt()
             ic.setBounds((tmp[0] - h).toInt(), (tmp[1] - h).toInt(), (tmp[0] + h).toInt(), (tmp[1] + h).toInt())
             ic.setTint(it.tint)
             ic.alpha = if (on) alpha else alpha / 3
@@ -459,13 +480,14 @@ class PenWheel(context: Context) : View(context) {
             // − and + at the ends: one step thinner / thicker
             for (plus in booleanArrayOf(false, true)) {
                 stepPos(plus, sliderP, tmp)
-                val r = stepSize * sliderP * (if (pressedStep == (if (plus) 1 else -1)) 0.88f else 1f)
-                fill.shader = null
-                fill.color = 0xFF1C1C1E.toInt()
-                fill.alpha = (alpha * 0.94f).toInt()
-                fill.setShadowLayer(dp(4f), 0f, dp(1f), ((0x55 * a).toInt() shl 24))
-                canvas.drawCircle(tmp[0], tmp[1], r, fill)
-                fill.clearShadowLayer()
+                val r = stepSize * sliderP
+                // on the band: just the sign (a light circle while pressed)
+                if (pressedStep == (if (plus) 1 else -1)) {
+                    fill.shader = null
+                    fill.color = Color.WHITE
+                    fill.alpha = (alpha * 0.14f).toInt()
+                    canvas.drawCircle(tmp[0], tmp[1], r, fill)
+                }
                 ring.color = Color.WHITE
                 ring.alpha = alpha
                 ring.strokeWidth = dp(2f)
