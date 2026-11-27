@@ -54,6 +54,9 @@ class PenWheel(context: Context) : View(context) {
         private const val ARC_SPAN = 130.0
         /** Size steps (− and +) just past each end of the slider (degrees). */
         private const val STEP_GAP = 18.0
+        /** The lower arc of buttons: the pen at the left end (degrees, clockwise on screen), 6 places to the right end. */
+        private const val RING_LEFT = 164.0
+        private const val RING_STEP = (164.0 - 16.0) / 5
         private const val TOOL_START = -PI * 3 / 4
     }
 
@@ -191,7 +194,8 @@ class PenWheel(context: Context) : View(context) {
     /** Centre of tool [i] of [n]: spread around the lower half of the ring (left to right), clear of the slider. */
     private fun toolPos(i: Int, n: Int, p: Float, out: FloatArray) {
         val turn = (1f - min(1f, p)) * -0.7f
-        val deg = if (n <= 1) 90.0 else 140.0 - 100.0 * i / (n - 1)
+        // one arc round the lower half, clockwise from the right: redo, undo, lasso, eraser, highlighter, pen
+        val deg = RING_LEFT - RING_STEP * i
         val a = (Math.toRadians(deg) + turn).toFloat()
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
@@ -222,7 +226,7 @@ class PenWheel(context: Context) : View(context) {
         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
 
-    /** Undo on the left side of the circle, redo on the right. */
+    /** Undo and redo at the right end of the lower arc (redo last); the camera in the middle. */
     private fun actionPos(item: Item, p: Float, out: FloatArray) {
         val turn = (1f - min(1f, p)) * -0.7f
         if (item.value == 2) { // camera: right in the middle
@@ -230,7 +234,7 @@ class PenWheel(context: Context) : View(context) {
             out[1] = cy
             return
         }
-        val a = Math.toRadians(if (item.value == 0) 164.0 else 16.0).toFloat() + turn
+        val a = Math.toRadians(if (item.value == 0) RING_LEFT - RING_STEP * 4 else RING_LEFT - RING_STEP * 5).toFloat() + turn
         val rr = toolR * p
         out[0] = cx + rr * cos(a)
         out[1] = cy + rr * sin(a)
