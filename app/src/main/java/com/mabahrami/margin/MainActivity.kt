@@ -1886,6 +1886,8 @@ class MainActivity : ComponentActivity() {
         val longAction: (() -> Unit)? = null,
         /** A bordered button with [label] in dim text, centred (no icon). */
         val iconOnly: Boolean = false,
+        /** A short dim line under the label, explaining it. */
+        val sub: String? = null,
         val action: () -> Unit,
     )
 
@@ -2042,12 +2044,20 @@ class MainActivity : ComponentActivity() {
                 continue
             }
             box.addView(TextView(this).apply {
-                text = item.label
+                text = if (item.sub == null) item.label else android.text.SpannableStringBuilder(item.label).apply {
+                    append("\n")
+                    val at = length
+                    append(item.sub)
+                    setSpan(android.text.style.RelativeSizeSpan(0.82f), at, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(android.text.style.ForegroundColorSpan(TEXT_DIM), at, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
                 textSize = if (item.primary) 17f else 14f
                 if (item.primary) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setTextColor(if (!item.enabled) TEXT_DIM else if (item.primary) ACCENT else if (item.color != 0) item.color else TEXT)
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.MIDDLE
+                maxLines = if (item.sub == null) 1 else 3
+                // (middle shortening only works on one line)
+                ellipsize = if (item.sub == null) TextUtils.TruncateAt.MIDDLE else TextUtils.TruncateAt.END
+                if (item.sub != null) setLineSpacing(dp(2).toFloat(), 1f)
                 setPadding(dp(14), dp(if (item.primary) 15 else 10), dp(14), dp(if (item.primary) 15 else 10))
                 if (item.icon != 0) {
                     val ic = androidx.core.content.ContextCompat.getDrawable(this@MainActivity, item.icon)?.mutate()
@@ -4896,9 +4906,12 @@ class MainActivity : ComponentActivity() {
     private fun showSaveMenu(anchor: View) {
         val d = active ?: run { toast("Open a PDF first"); return }
         showGenieMenu(anchor, listOf(
-            GItem(if (d.saveUri != null) "Save" else "Save…") { if (active === d) save(d) },
-            GItem("Save as / Rename…") { if (active === d) showSaveDialog(d) },
-            GItem("Export as plain PDF…") { if (active === d) startExport(d) },
+            GItem(if (d.saveUri != null) "Save" else "Save…",
+                sub = "Your annotations stay editable") { if (active === d) save(d) },
+            GItem("Save as / Rename…",
+                sub = "Your annotations stay editable") { if (active === d) showSaveDialog(d) },
+            GItem("Export as plain PDF…",
+                sub = "Annotations become part of the page and can't be edited") { if (active === d) startExport(d) },
         ))
     }
 
