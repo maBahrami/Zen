@@ -4593,6 +4593,7 @@ class MainActivity : ComponentActivity() {
             val remote = !isLocalUri(uri)
             showLoading(name, remote)
             val openStamp = withContext(Dispatchers.IO) { remoteStamp(uri) }
+            var changedOutside = false
             val editable = withContext(Dispatchers.IO) {
                 dir.mkdirs()
                 val tmp = File(dir, "source.pdf.tmp")
@@ -4650,7 +4651,9 @@ class MainActivity : ComponentActivity() {
                 val src = File(dir, "source.pdf")
                 if (!tmp.renameTo(src)) throw IOException("can't store the file")
                 // A file saved by Margin carries the original + editable strokes inside it.
-                Exporter.unpack(src, dir)
+                val un = Exporter.unpack(src, dir)
+                changedOutside = un == Exporter.Unpacked.CHANGED
+                un == Exporter.Unpacked.EDITABLE
             }
             val d = withContext(renderDispatcher) { openDoc(id, dir, name) }
             d.name = name
@@ -4669,6 +4672,15 @@ class MainActivity : ComponentActivity() {
             done = true
             markDirty(d)
             if (resume in 1 until d.pageCount) showResumeChip(d, resume)
+            if (changedOutside) compactShow(
+                ZenBuilder()
+                    .setTitle("Changed in another app")
+                    .setMessage("“${baseName(name)}” was changed in another app after Zen saved it. " +
+                        "It opens as that app left it, so its changes show, but the ink drawn earlier in Zen " +
+                        "is now part of the page and can't be edited or erased.")
+                    .setPositiveButton("OK", null)
+                    .create(), 380
+            )
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             Log.e(TAG, "import", t)

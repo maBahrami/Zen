@@ -43,6 +43,18 @@ object Exporter {
     private const val EMBED_LEGACY_SOURCE = "margin-source.pdf"
     private const val EMBED_STATE = "margin-state.json"
     private const val EMBED_FILE_PREFIX = "margin-file:"
+    /** A fingerprint of the visible pages at save time, to notice when another app changed them later. */
+    private const val EMBED_SIG = "margin-sig.txt"
+
+    /** What [unpack] found in a file. */
+    enum class Unpacked {
+        /** Not saved by Zen (or no usable editable data): opened as it is. */
+        PLAIN,
+        /** Saved by Zen and unchanged since: the editable original and strokes were restored. */
+        EDITABLE,
+        /** Saved by Zen, but another app changed its pages since: opened as it is, so those changes show. */
+        CHANGED,
+    }
 
     class ImgSnap(
         val path: File,
@@ -203,7 +215,7 @@ object Exporter {
      * If [file] (dir/source.pdf) was saved by Margin, replaces the working folder's contents with
      * the embedded original, inserted PDFs, images and state. Returns true when editable data was found.
      */
-    fun unpack(file: File, dir: File): Boolean {
+    fun unpack(file: File, dir: File): Unpacked {
         val tmpDir = File(dir, "unpack.tmp")
         tmpDir.deleteRecursively()
         tmpDir.mkdirs()
@@ -213,6 +225,17 @@ object Exporter {
                 val names = doc.documentCatalog.names ?: return cleanup(tmpDir)
                 val map = names.embeddedFiles?.names ?: return cleanup(tmpDir)
                 val st = map[EMBED_STATE]?.embeddedFile ?: return cleanup(tmpDir)
+                // Another app (like the Drive app) may have drawn on the pages after Zen saved them. Its changes are
+                // only on the visible pages, not in the embedded original, so restoring that would lose them.
+                // Files saved before this check have no fingerprint and are restored as before.
+                map[EMBED_SIG]?.embeddedFile?.let { sf ->
+                    val saved = sf.createInputStream().use { it.readBytes().toString(Charsets.UTF_8) }.trim()
+                    val now = try { pageSig(doc) } catch (e: Exception) { null }
+                    if (now != saved) {
+                        tmpDir.deleteRecursively()
+                        return Unpacked.CHANGED
+                    }
+                }
                 for ((key, spec) in map) {
                     val rel = when {
                         key == EMBED_LEGACY_SOURCE -> "source.pdf"
@@ -247,12 +270,39 @@ object Exporter {
             if (!newSource.renameTo(file)) throw IOException("can't unpack the saved file")
         }
         tmpDir.deleteRecursively()
-        return true
+        return Unpacked.EDITABLE
     }
 
-    private fun cleanup(tmpDir: File): Boolean {
+    private fun cleanup(tmpDir: File): Unpacked {
         tmpDir.deleteRecursively()
-        return false
+        return Unpacked.PLAIN
+    }
+
+    /**
+     * A fingerprint of what the pages show: page count, boxes, rotation, the decoded drawing instructions and the
+     * annotations. Saving again or re-compressing keeps it; drawing, adding or removing pages changes it.
+     * Numbers are rounded so that re-written number formats don't matter.
+     */
+    private fun pageSig(doc: PDDocument): String {
+        val md = java.security.MessageDigest.getInstance("MD5")
+        val buf = ByteArray(64 * 1024)
+        fun r(v: Float?) = if (v == null) "-" else Math.round(v * 10.0).toString()
+        fun box(b: PDRectangle?) = if (b == null) "-" else "${r(b.lowerLeftX)},${r(b.lowerLeftY)},${r(b.upperRightX)},${r(b.upperRightY)}"
+        md.update("n${doc.numberOfPages};".toByteArray())
+        for (page in doc.pages) {
+            md.update("p${box(page.mediaBox)}/${box(page.cropBox)}/${page.rotation};".toByteArray())
+            page.contents?.use { inp ->
+                while (true) {
+                    val n = inp.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            val annots = page.annotations
+            md.update("a${annots.size};".toByteArray())
+            for (a in annots) md.update("${a.subtype}:${box(a.rectangle)};".toByteArray())
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     // ---------- internals ----------
@@ -275,6 +325,12 @@ object Exporter {
         }
         val stateBytes = job.embedState!!.toByteArray(Charsets.UTF_8)
         map[EMBED_STATE] = fileSpec(doc, EMBED_STATE, "application/json", ByteArrayInputStream(stateBytes), stateBytes.size)
+        // the pages are final here (embedding doesn't touch them); a file without a fingerprint just skips the check
+        try {
+            val sig = pageSig(doc).toByteArray(Charsets.UTF_8)
+            map[EMBED_SIG] = fileSpec(doc, EMBED_SIG, "text/plain", ByteArrayInputStream(sig), sig.size)
+        } catch (e: Exception) {
+        }
         val tree = PDEmbeddedFilesNameTreeNode()
         tree.setNames(map)
         names.setEmbeddedFiles(tree)
