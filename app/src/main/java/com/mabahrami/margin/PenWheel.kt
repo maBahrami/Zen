@@ -334,6 +334,18 @@ class PenWheel(context: Context) : View(context) {
         path.close()
     }
 
+    /** A dim round button on the band: a faint light disc with a hairline edge; brighter while pressed. */
+    private fun dimButton(canvas: Canvas, x: Float, y: Float, r: Float, alpha: Int, pressed: Boolean) {
+        fill.shader = null
+        fill.color = Color.WHITE
+        fill.alpha = (alpha * (if (pressed) 0.22f else 0.09f)).toInt()
+        canvas.drawCircle(x, y, r, fill)
+        ring.color = Color.WHITE
+        ring.alpha = (alpha * 0.14f).toInt()
+        ring.strokeWidth = dp(0.8f)
+        canvas.drawCircle(x, y, r - dp(0.4f), ring)
+    }
+
     override fun onDraw(canvas: Canvas) {
         val p = progress.coerceAtLeast(0f)
         if (p <= 0.001f) return
@@ -371,7 +383,7 @@ class PenWheel(context: Context) : View(context) {
                 canvas.restore()
             }
             fill.color = 0xFF1C1C1E.toInt()
-            fill.alpha = (alpha * (if (bd != null) 0.62f else 0.95f)).toInt()
+            fill.alpha = (alpha * (if (bd != null) 0.38f else 0.95f)).toInt()
             canvas.drawPath(bandPath, fill)
             ring.color = Color.WHITE
             ring.alpha = (alpha * 0.12f).toInt()
@@ -382,11 +394,12 @@ class PenWheel(context: Context) : View(context) {
         for ((i, it) in tools.withIndex()) {
             toolPos(i, tools.size, tp, tmp)
             val r = toolSize * min(1f, tp)
-            // on the band: just the icon; the tool in use sits in a soft blue circle, a pressed one in a light one
-            if (it.selected || it === pressed) {
+            // each tool on its own dim button; the tool in use in soft blue
+            dimButton(canvas, tmp[0], tmp[1], r * 0.95f, alpha, it === pressed)
+            if (it.selected) {
                 fill.shader = null
-                fill.color = if (it.selected) ACCENT else Color.WHITE
-                fill.alpha = (alpha * (if (it.selected) 0.28f else 0.14f)).toInt()
+                fill.color = ACCENT
+                fill.alpha = (alpha * 0.32f).toInt()
                 canvas.drawCircle(tmp[0], tmp[1], r * 0.95f, fill)
             }
             val ic = it.icon ?: continue
@@ -441,10 +454,8 @@ class PenWheel(context: Context) : View(context) {
                 fill.setShadowLayer(dp(5f), 0f, dp(1.5f), ((0x55 * a).toInt() shl 24))
                 canvas.drawCircle(tmp[0], tmp[1], r * (if (it === pressed) 0.88f else 1f), fill)
                 fill.clearShadowLayer()
-            } else if (it === pressed && on) {
-                fill.color = Color.WHITE
-                fill.alpha = (alpha * 0.14f).toInt()
-                canvas.drawCircle(tmp[0], tmp[1], r * 0.95f, fill)
+            } else {
+                dimButton(canvas, tmp[0], tmp[1], r * 0.95f, alpha, it === pressed && on)
             }
             val ic = it.icon ?: continue
             val h = (r * (if (it.value == 2) 0.7f else 0.62f)).toInt()
@@ -515,13 +526,8 @@ class PenWheel(context: Context) : View(context) {
             for (plus in booleanArrayOf(false, true)) {
                 stepPos(plus, sliderP, tmp)
                 val r = stepSize * sliderP
-                // on the band: just the sign (a light circle while pressed)
-                if (pressedStep == (if (plus) 1 else -1)) {
-                    fill.shader = null
-                    fill.color = Color.WHITE
-                    fill.alpha = (alpha * 0.14f).toInt()
-                    canvas.drawCircle(tmp[0], tmp[1], r, fill)
-                }
+                // on its own dim button, like the tools
+                dimButton(canvas, tmp[0], tmp[1], r, alpha, pressedStep == (if (plus) 1 else -1))
                 ring.color = Color.WHITE
                 ring.alpha = alpha
                 ring.strokeWidth = dp(2f)
