@@ -334,18 +334,12 @@ class PenWheel(context: Context) : View(context) {
         path.close()
     }
 
-    /** A dim circle drawn round an icon on the band (just a thin line); a light fill while pressed. */
+    /** A very subtle disc behind an icon on the band, barely lighter than the band; a little more while pressed. */
     private fun dimButton(canvas: Canvas, x: Float, y: Float, r: Float, alpha: Int, pressed: Boolean) {
-        if (pressed) {
-            fill.shader = null
-            fill.color = Color.WHITE
-            fill.alpha = (alpha * 0.14f).toInt()
-            canvas.drawCircle(x, y, r, fill)
-        }
-        ring.color = Color.WHITE
-        ring.alpha = (alpha * 0.22f).toInt()
-        ring.strokeWidth = dp(1f)
-        canvas.drawCircle(x, y, r - dp(0.5f), ring)
+        fill.shader = null
+        fill.color = Color.WHITE
+        fill.alpha = (alpha * (if (pressed) 0.14f else 0.045f)).toInt()
+        canvas.drawCircle(x, y, r, fill)
     }
 
     override fun onDraw(canvas: Canvas) {
